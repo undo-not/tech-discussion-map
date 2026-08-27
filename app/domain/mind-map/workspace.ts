@@ -35,29 +35,18 @@ export function analysisStateByteEstimate(state: AnalysisState): number {
   return bytes;
 }
 
-function trimPast(entries: AnalysisState[]): AnalysisState[] {
-  const kept: AnalysisState[] = [];
-  let bytes = 0;
-  for (let index = entries.length - 1; index >= 0 && kept.length < maximumHistoryEntries; index -= 1) {
-    const entryBytes = analysisStateByteEstimate(entries[index]);
-    if (bytes + entryBytes > maximumHistoryBytes) break;
-    kept.unshift(entries[index]);
-    bytes += entryBytes;
+function trimHistoryStacks(pastEntries: AnalysisState[], futureEntries: AnalysisState[]): Pick<AnalysisHistory, 'past' | 'future'> {
+  const past = [...pastEntries];
+  const future = [...futureEntries];
+  let bytes = [...past, ...future].reduce((total, entry) => total + analysisStateByteEstimate(entry), 0);
+  while (past.length + future.length > maximumHistoryEntries || bytes > maximumHistoryBytes) {
+    // Keep the nearest targets on both sides of the present. past[0] is
+    // past.length steps away and future.at(-1) is future.length steps away.
+    const removed = past.length >= future.length ? past.shift() : future.pop();
+    if (!removed) break;
+    bytes -= analysisStateByteEstimate(removed);
   }
-  return kept;
-}
-
-function trimFuture(entries: AnalysisState[]): AnalysisState[] {
-  const kept: AnalysisState[] = [];
-  let bytes = 0;
-  for (const entry of entries) {
-    if (kept.length >= maximumHistoryEntries) break;
-    const entryBytes = analysisStateByteEstimate(entry);
-    if (bytes + entryBytes > maximumHistoryBytes) break;
-    kept.push(entry);
-    bytes += entryBytes;
-  }
-  return kept;
+  return { past, future };
 }
 
 export function createAnalysisHistory(initial: AnalysisState): AnalysisHistory {
@@ -67,7 +56,8 @@ export function createAnalysisHistory(initial: AnalysisState): AnalysisHistory {
 export function commitAnalysisHistory(history: AnalysisHistory, next: AnalysisState, reset = false): AnalysisHistory {
   if (reset) return createAnalysisHistory(next);
   if (next === history.present || next.revision === history.present.revision) return history;
-  return { past: trimPast([...history.past, structuredClone(history.present)]), present: structuredClone(next), future: [] };
+  const stacks = trimHistoryStacks([...history.past, structuredClone(history.present)], []);
+  return { ...stacks, present: structuredClone(next) };
 }
 
 function restoredState(current: AnalysisState, target: AnalysisState, utterances: TranscriptUtterance[], preserveRemovedAiEvidence = false): AnalysisState {
@@ -85,20 +75,20 @@ function restoredState(current: AnalysisState, target: AnalysisState, utterances
 export function undoAnalysisHistory(history: AnalysisHistory, utterances: TranscriptUtterance[]): AnalysisHistory {
   const target = history.past.at(-1);
   if (!target) return history;
+  const stacks = trimHistoryStacks(history.past.slice(0, -1), [structuredClone(history.present), ...history.future]);
   return {
-    past: history.past.slice(0, -1),
+    ...stacks,
     present: restoredState(history.present, target, utterances, true),
-    future: trimFuture([structuredClone(history.present), ...history.future]),
   };
 }
 
 export function redoAnalysisHistory(history: AnalysisHistory, utterances: TranscriptUtterance[]): AnalysisHistory {
   const target = history.future[0];
   if (!target) return history;
+  const stacks = trimHistoryStacks([...history.past, structuredClone(history.present)], history.future.slice(1));
   return {
-    past: trimPast([...history.past, structuredClone(history.present)]),
+    ...stacks,
     present: restoredState(history.present, target, utterances),
-    future: history.future.slice(1),
   };
 }
 

@@ -6,7 +6,7 @@ Analysis updates arrive while an operator may be navigating, confirming, or edit
 
 ## Decision
 
-Keep stable lane-slot coordinates and snapshot history bounded by 50 entries and an estimated 8 MiB in the local workspace layer. Apply human changes through a separate validator-backed function. Undo and redo restore items as a new higher revision while retaining the applied-delta audit log. Preserve an undone AI addition as a withdrawn evidence tombstone and reject a later model add based only on that evidence. Reject an in-flight delta when its captured revision is stale and require an explicit re-analysis action. Treat every start, delete, and saved-session load as a new local workspace generation so React remounts the map and discards prior layout slots independently of analysis revision.
+Keep stable lane-slot coordinates and snapshot history bounded across the combined undo and redo stacks by 50 entries and an estimated 8 MiB in the local workspace layer. Trim the farthest target on whichever side has greater depth so the nearest undo and redo operations remain available. Apply human changes through a separate validator-backed function. Undo and redo restore items as a new higher revision while retaining the applied-delta audit log. Preserve an undone AI addition as a withdrawn evidence tombstone and reject a later model add based only on that evidence. Reject an in-flight delta when its captured revision is stale and require an explicit re-analysis action. Treat every start, delete, and saved-session load as a new local workspace generation so React remounts the map and discards prior layout slots independently of analysis revision.
 
 ## Consequences
 

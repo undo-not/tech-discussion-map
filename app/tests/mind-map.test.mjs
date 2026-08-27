@@ -117,6 +117,12 @@ test('large workspace history is bounded by both entry count and estimated bytes
   }
   assert.ok(history.past.length < maximumHistoryEntries);
   assert.ok(history.past.reduce((total, entry) => total + analysisStateByteEstimate(entry), 0) <= maximumHistoryBytes);
+  for (let index = 0; index < 12; index += 1) history = undoAnalysisHistory(history, utterances);
+  assert.ok(history.past.length + history.future.length <= maximumHistoryEntries);
+  assert.ok([...history.past, ...history.future].reduce((total, entry) => total + analysisStateByteEstimate(entry), 0) <= maximumHistoryBytes);
+  for (let index = 0; index < 6; index += 1) history = redoAnalysisHistory(history, utterances);
+  assert.ok(history.past.length + history.future.length <= maximumHistoryEntries);
+  assert.ok([...history.past, ...history.future].reduce((total, entry) => total + analysisStateByteEstimate(entry), 0) <= maximumHistoryBytes);
 });
 
 test('confirmed mock item is not duplicated and remains protected from later AI updates', () => {
