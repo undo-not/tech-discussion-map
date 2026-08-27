@@ -4,11 +4,11 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 
 ## Product boundary
 
-初期MVPは、利用者の明示操作によるマイク入力とローカルのデモ会話を扱います。Teams、Microsoft Graph、外部AI model、永続保存は交換可能なadapterとして分離し、対応するIssueの許可と受入条件が整うまで接続しません。生音声は既定で保存しません。
+本番runtimeはWindowsローカルcompanionとして動作し、利用者の明示操作によるマイク入力とTeams processに限定したapplication loopbackを交換可能なadapterで扱います。Microsoft Graphは会議後の照合候補です。Teams media botはlocal-only境界に反するため採用せず、meeting side panelはhosting境界を変更する場合の将来UI候補に限ります。ChatGPT Sitesは合成データのUI review専用です。生音声は保存せず、文字起こしと分析結果はGit working tree外へローカル保存できます。OpenAI API送信はIssue #3と#6のredaction、保持、`store: false`境界に従います。詳細は[ADR-0002](docs/adr/0002-local-windows-teams-audio-boundary.md)を参照してください。
 
 ## Repository layout
 
-- `app/`: Sites/VinextによるWebアプリ
+- `app/`: 共通UI層と、Sites/Vinextによる合成データreview surface
 - `docs/specs/`: 現在のproduct behavior
 - `docs/policies/`: Issue、PR、データ、agent協働の運用規約
 - `docs/adr/`: 永続的な技術判断
