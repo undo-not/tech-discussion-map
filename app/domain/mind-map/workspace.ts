@@ -3,6 +3,7 @@ import type { TranscriptUtterance } from '../transcription/utterance.ts';
 
 export type MapPosition = { x: number; y: number };
 export type MapLayout = { positions: Record<string, MapPosition> };
+export type MapViewport = { scrollLeft: number; scrollTop: number; width: number; height: number };
 export type AnalysisHistory = { past: AnalysisState[]; present: AnalysisState; future: AnalysisState[] };
 export type HumanItemPatch = { title?: string; detail?: string; status?: AnalysisItem['status']; confirm?: boolean };
 
@@ -88,6 +89,14 @@ export function reconcileMapLayout(previous: MapLayout, state: AnalysisState): M
   return { positions };
 }
 
+export function resetMapLayout(): MapLayout {
+  return { positions: {} };
+}
+
+export function latestRenderedMapItems(items: AnalysisItem[]): AnalysisItem[] {
+  return items.slice(-maximumRenderedNodes);
+}
+
 export function mapCanvasHeight(layout: MapLayout, visibleIds: Set<string>): number {
   const maximumY = Object.entries(layout.positions).reduce((result, [id, position]) => visibleIds.has(id) ? Math.max(result, position.y) : result, 0);
   return Math.max(620, maximumY + mapNodeHeight + 80);
@@ -106,4 +115,22 @@ export function nearestNodeId(currentId: string, direction: 'left' | 'right' | '
       return leftDistance - rightDistance || left.id.localeCompare(right.id);
     });
   return directional[0]?.id ?? currentId;
+}
+
+export function visibleSelectionId(selectedId: string, visibleIds: string[]): string {
+  return visibleIds.includes(selectedId) ? selectedId : visibleIds[0] ?? '';
+}
+
+export function scrollTargetForNode(viewport: MapViewport, position: MapPosition, zoom: number, padding = 24): { left: number; top: number } {
+  const nodeLeft = position.x * zoom;
+  const nodeTop = position.y * zoom;
+  const nodeRight = (position.x + mapNodeWidth) * zoom;
+  const nodeBottom = (position.y + mapNodeHeight) * zoom;
+  let left = viewport.scrollLeft;
+  let top = viewport.scrollTop;
+  if (nodeLeft < viewport.scrollLeft + padding) left = nodeLeft - padding;
+  else if (nodeRight > viewport.scrollLeft + viewport.width - padding) left = nodeRight - viewport.width + padding;
+  if (nodeTop < viewport.scrollTop + padding) top = nodeTop - padding;
+  else if (nodeBottom > viewport.scrollTop + viewport.height - padding) top = nodeBottom - viewport.height + padding;
+  return { left: Math.max(0, Math.round(left)), top: Math.max(0, Math.round(top)) };
 }

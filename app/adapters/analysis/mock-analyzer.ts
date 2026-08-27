@@ -38,9 +38,9 @@ export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], 
     const key = `${classified.kind}:${normalize(text.replace(/^(?:訂正|撤回)[:：]?\s*/, ''))}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const matching = state.items.find((item) => item.provenance === 'ai-suggested' && item.kind === classified.kind && normalize(item.title) === normalize(titleFor(text)));
+    const matching = state.items.find((item) => item.kind === classified.kind && (item.evidenceUtteranceIds.includes(utterance.id) || normalize(item.title) === normalize(titleFor(text))));
     if (matching) {
-      if (!matching.evidenceUtteranceIds.includes(utterance.id) && matching.evidenceUtteranceIds.length < maximumEvidenceIds) operations.push({ op: 'update', itemId: matching.id, title: null, detail: null, status: null, confidence: Math.max(matching.confidence, 0.72), addEvidenceUtteranceIds: [utterance.id], removeEvidenceUtteranceIds: [] });
+      if (matching.provenance === 'ai-suggested' && !matching.evidenceUtteranceIds.includes(utterance.id) && matching.evidenceUtteranceIds.length < maximumEvidenceIds) operations.push({ op: 'update', itemId: matching.id, title: null, detail: null, status: null, confidence: Math.max(matching.confidence, 0.72), addEvidenceUtteranceIds: [utterance.id], removeEvidenceUtteranceIds: [] });
       continue;
     }
     const retractTarget = /撤回/.test(text) ? [...state.items].reverse().find((item) => item.provenance === 'ai-suggested' && ['decision', 'claim', 'action'].includes(item.kind) && item.status !== 'withdrawn') : undefined;

@@ -10,4 +10,4 @@ Keep stable lane-slot coordinates and bounded snapshot history in the local work
 
 ## Consequences
 
-Unrelated node positions remain stable and all changes share one undo surface. Map state stays out of external requests except for the already documented bounded, redacted analysis projection. The local history is intentionally session-scoped and is reset at session boundaries. Layout is functional rather than graph-optimized, and display is capped at 100 matching nodes for the MVP.
+Unrelated node positions remain stable and all changes share one undo surface. Map state stays out of external requests except for the already documented bounded, redacted analysis projection. Local history and retained layout slots are session-scoped and reset at session boundaries. Layout is functional rather than graph-optimized, and display is capped at the latest 100 matching nodes for the MVP.

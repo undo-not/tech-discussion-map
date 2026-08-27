@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { LocalOpenAiAnalyzer } from '@/adapters/analysis/local-openai-analyzer.ts';
 import { analyzeWithDeterministicMock } from '@/adapters/analysis/mock-analyzer.ts';
 import { isLoopbackRuntime, listMicrophones, startMicrophoneCapture, type MicrophoneCapture, type MicrophoneDevice } from '@/adapters/audio/browser-microphone.ts';
@@ -27,11 +27,12 @@ const subscribeRuntime = () => () => undefined;
 
 export type CapturePanelProps = {
   analysisState: AnalysisState;
+  getAnalysisState: () => AnalysisState;
   onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean }) => void;
   onTranscriptChange?: (state: TranscriptState) => void;
 };
 
-export function CapturePanel({ analysisState, onAnalysisStateChange, onTranscriptChange }: CapturePanelProps) {
+export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange }: CapturePanelProps) {
   const localRuntime = useSyncExternalStore(subscribeRuntime, () => isLoopbackRuntime(window.location), () => false);
   const [sessionState, dispatch] = useReducer((state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event), 'idle');
   const [devices, setDevices] = useState<MicrophoneDevice[]>([]);
@@ -150,14 +151,15 @@ export function CapturePanel({ analysisState, onAnalysisStateChange, onTranscrip
     });
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (analysisStateRef.current.revision === analysisState.revision) {
       analysisStateRef.current = analysisState;
       return;
     }
     analysisStateRef.current = analysisState;
     persistSnapshot(transcriptRef.current);
-    // persistSnapshot intentionally uses current refs; only controlled state identity is reactive here.
+    // Sync before paint so an in-flight model continuation cannot apply against the pre-edit revision.
+    // persistSnapshot intentionally uses current refs; only controlled state revision is reactive here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisState]);
 
@@ -176,11 +178,13 @@ export function CapturePanel({ analysisState, onAnalysisStateChange, onTranscrip
         setOpenAiInFlight((value) => value + 1);
         try {
           openAiAnalyzer.current ??= new LocalOpenAiAnalyzer();
-          const delta = await openAiAnalyzer.current.analyze('gpt-5-mini', window.text, analysisStateRef.current);
+          const requestState = getAnalysisState();
+          analysisStateRef.current = requestState;
+          const delta = await openAiAnalyzer.current.analyze('gpt-5-mini', window.text, requestState);
           if (generation !== analysisGenerationRef.current) { setAnalysisStatus('sessionが切り替わったため、旧sessionの分析結果を破棄しました。'); return; }
           if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current) { setAnalysisStatus('分析中に外部送信許可が解除されたため、結果を適用しませんでした。'); return; }
           if (delta.operations.length === 0) { setAnalysisStatus('OpenAI分析: 構造上の変化はありません。'); return; }
-          const next = applyAnalysisDelta(analysisStateRef.current, delta, transcriptRef.current.utterances);
+          const next = applyAnalysisDelta(getAnalysisState(), delta, transcriptRef.current.utterances);
           publishAnalysisState(next); if (persistResult) persistSnapshot(transcriptRef.current);
           setAnalysisStatus(`OpenAI分析をrevision ${next.revision}へ原子的に適用しました。`);
         } finally { setOpenAiInFlight((value) => Math.max(0, value - 1)); }
@@ -188,9 +192,11 @@ export function CapturePanel({ analysisState, onAnalysisStateChange, onTranscrip
       }
       if (generation !== analysisGenerationRef.current) return;
       const currentTranscript = transcriptRef.current;
-      const delta = analyzeWithDeterministicMock(currentTranscript.utterances, analysisStateRef.current);
+      const currentState = getAnalysisState();
+      analysisStateRef.current = currentState;
+      const delta = analyzeWithDeterministicMock(currentTranscript.utterances, currentState);
       if (delta.operations.length === 0) { setAnalysisStatus('local mock: 構造上の変化はありません。'); return; }
-      const next = applyAnalysisDelta(analysisStateRef.current, delta, currentTranscript.utterances);
+      const next = applyAnalysisDelta(getAnalysisState(), delta, currentTranscript.utterances);
       publishAnalysisState(next); if (persistResult) persistSnapshot(currentTranscript);
       setAnalysisStatus(`local mockをrevision ${next.revision}へ更新しました。`);
     }).catch((error: unknown) => {
@@ -439,7 +445,7 @@ export function CapturePanel({ analysisState, onAnalysisStateChange, onTranscrip
           {analysisState.items.length === 0 && <span className="text-[#65736e]">分析itemはまだありません。</span>}
         </div>
       </div>
-      <details open={!consentConfirmed || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
+      <details open={(!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
         <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
           <div className="space-y-2">

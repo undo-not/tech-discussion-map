@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { emptyAnalysisState, validateAnalysisState } from '../domain/analysis/contract.ts';
-import { applyHumanItemPatch, commitAnalysisHistory, createAnalysisHistory, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, undoAnalysisHistory } from '../domain/mind-map/workspace.ts';
+import { analyzeWithDeterministicMock } from '../adapters/analysis/mock-analyzer.ts';
+import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState } from '../domain/analysis/contract.ts';
+import { applyHumanItemPatch, commitAnalysisHistory, createAnalysisHistory, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
 
-const utterances = Array.from({ length: 100 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
+const utterances = Array.from({ length: 101 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
 const kinds = ['topic', 'claim', 'question', 'decision', 'action', 'dependency', 'risk'];
 
 function stateWithNodes(count, revision = 0) {
@@ -85,4 +86,36 @@ test('human patches retain validator boundaries and session reset clears history
   assert.equal(reset.past.length, 0);
   assert.equal(reset.future.length, 0);
   assert.deepEqual(reset.present, emptyAnalysisState);
+  assert.deepEqual(resetMapLayout(), { positions: {} });
+});
+
+test('confirmed mock item is not duplicated and remains protected from later AI updates', () => {
+  const meeting = [{ id: 'confirm-u1', revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: 0, endMs: 10, text: '認証はOAuthで進めましょう' }];
+  const firstDelta = analyzeWithDeterministicMock(meeting, emptyAnalysisState);
+  const analyzed = applyAnalysisDelta(emptyAnalysisState, firstDelta, meeting);
+  const confirmed = applyHumanItemPatch(analyzed, analyzed.items[0].id, { confirm: true }, meeting);
+  const nextDelta = analyzeWithDeterministicMock(meeting, confirmed);
+  assert.equal(nextDelta.operations.length, 0);
+  assert.throws(() => applyAnalysisDelta(confirmed, {
+    ...nextDelta,
+    deltaId: 'attempt-human-overwrite',
+    operations: [{ op: 'update', itemId: confirmed.items[0].id, title: 'AIによる上書き', detail: null, status: null, confidence: 0.9, addEvidenceUtteranceIds: [], removeEvidenceUtteranceIds: [] }],
+  }, meeting), /analysis-human-item-protected/);
+});
+
+test('keyboard selection replacement and scroll target keep a distant node visible', () => {
+  assert.equal(visibleSelectionId('removed', ['first', 'second']), 'first');
+  assert.equal(visibleSelectionId('second', ['first', 'second']), 'second');
+  const state = stateWithNodes(100);
+  const layout = reconcileMapLayout({ positions: {} }, state);
+  const position = layout.positions['map-node-96'];
+  const viewport = { scrollLeft: 0, scrollTop: 0, width: 520, height: 620 };
+  const target = scrollTargetForNode(viewport, position, 1);
+  assert.ok(target.top > 0);
+  assert.ok(position.y >= target.top);
+  assert.ok(position.y + mapNodeHeight <= target.top + viewport.height);
+  const latest = latestRenderedMapItems(stateWithNodes(101).items);
+  assert.equal(latest.length, maximumRenderedNodes);
+  assert.equal(latest[0].id, 'map-node-1');
+  assert.equal(latest.at(-1).id, 'map-node-100');
 });

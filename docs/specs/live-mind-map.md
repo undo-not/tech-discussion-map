@@ -6,7 +6,7 @@ The workspace projects the versioned `AnalysisState` into an editable live map w
 
 ## Stable layout and degraded display
 
-Nodes are assigned to deterministic kind lanes. A node keeps its first assigned position even when other nodes are added, withdrawn, filtered, or restored; vacated positions are not compacted. The viewport scrolls independently from analysis updates. At most 100 matching nodes are rendered, with an explicit degraded-display notice and search/type filters when more exist. This bound limits DOM and edge work while retaining the full validated analysis state.
+Nodes are assigned to deterministic kind lanes. A node keeps its first assigned position even when other nodes are added, withdrawn, filtered, or restored; vacated positions are not compacted within a session. The viewport does not move for analysis updates, but explicit keyboard navigation scrolls the focused node into view. At most the latest 100 matching nodes are rendered, with an explicit degraded-display notice and search/type filters when more exist. This bound limits DOM and edge work while retaining the full validated analysis state. Starting another empty session resets both history and retained layout slots.
 
 ## Human authority and history
 
@@ -20,4 +20,4 @@ Every rendered node is a keyboard-focusable button with a roving tab stop. Arrow
 
 ## Verification
 
-Pure domain tests cover stable placement with 100 nodes, deterministic allocation for new nodes, bounded unified undo/redo, forward-only revision behavior, protected human provenance, and spatial keyboard navigation. The app gate also runs typecheck, lint, production build, privacy checks, and the existing native Windows CI jobs.
+Pure domain tests cover stable placement with 100 nodes, deterministic allocation for new nodes, bounded unified undo/redo, forward-only revision behavior, rejection of an AI overwrite after human confirmation, suppression of duplicate mock nodes after confirmation, selection replacement, and the scroll target for distant keyboard navigation. The app gate also runs typecheck, lint, production build, privacy checks, and the existing native Windows CI jobs.

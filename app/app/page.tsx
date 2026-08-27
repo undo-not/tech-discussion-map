@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CapturePanel } from '@/components/capture-panel';
 import { LiveMindMap } from '@/components/live-mind-map';
 import { emptyAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
@@ -15,18 +15,33 @@ export default function Home() {
   const [selectedNode, setSelectedNode] = useState('root');
   const [visibleCount, setVisibleCount] = useState(workspace.transcript.length);
   const [analysisHistory, setAnalysisHistory] = useState(() => createAnalysisHistory(emptyAnalysisState));
+  const analysisHistoryRef = useRef(analysisHistory);
   const [liveTranscript, setLiveTranscript] = useState<TranscriptState>(emptyTranscriptState);
 
   const receiveAnalysisState = useCallback((state: AnalysisState, options?: { resetHistory?: boolean }) => {
-    setAnalysisHistory((history) => commitAnalysisHistory(history, state, options?.resetHistory));
+    const next = commitAnalysisHistory(analysisHistoryRef.current, state, options?.resetHistory);
+    analysisHistoryRef.current = next;
+    setAnalysisHistory(next);
   }, []);
-  const undoMap = useCallback(() => setAnalysisHistory((history) => undoAnalysisHistory(history, liveTranscript.utterances)), [liveTranscript]);
-  const redoMap = useCallback(() => setAnalysisHistory((history) => redoAnalysisHistory(history, liveTranscript.utterances)), [liveTranscript]);
+  const getAnalysisState = useCallback(() => analysisHistoryRef.current.present, []);
+  const undoMap = useCallback(() => {
+    const next = undoAnalysisHistory(analysisHistoryRef.current, liveTranscript.utterances);
+    analysisHistoryRef.current = next;
+    setAnalysisHistory(next);
+  }, [liveTranscript]);
+  const redoMap = useCallback(() => {
+    const next = redoAnalysisHistory(analysisHistoryRef.current, liveTranscript.utterances);
+    analysisHistoryRef.current = next;
+    setAnalysisHistory(next);
+  }, [liveTranscript]);
   const patchMapItem = useCallback((itemId: string, patch: HumanItemPatch) => {
-    setAnalysisHistory((history) => {
-      try { return commitAnalysisHistory(history, applyHumanItemPatch(history.present, itemId, patch, liveTranscript.utterances)); }
-      catch { return history; }
-    });
+    try {
+      const current = analysisHistoryRef.current;
+      const next = commitAnalysisHistory(current, applyHumanItemPatch(current.present, itemId, patch, liveTranscript.utterances));
+      analysisHistoryRef.current = next;
+      setAnalysisHistory(next);
+      return true;
+    } catch { return false; }
   }, [liveTranscript]);
 
   useEffect(() => {
@@ -75,7 +90,7 @@ export default function Home() {
         </div>
       </header>
 
-      <CapturePanel analysisState={analysisHistory.present} onAnalysisStateChange={receiveAnalysisState} onTranscriptChange={setLiveTranscript} />
+      <CapturePanel analysisState={analysisHistory.present} getAnalysisState={getAnalysisState} onAnalysisStateChange={receiveAnalysisState} onTranscriptChange={setLiveTranscript} />
 
       <section className="mx-auto grid w-full max-w-[1600px] gap-3 p-3 xl:min-h-0 xl:grid-cols-[minmax(250px,0.72fr)_minmax(520px,1.65fr)_minmax(270px,0.78fr)] xl:p-4">
         <aside className="flex min-h-[360px] flex-col overflow-hidden rounded-2xl border border-[#d9ded8] bg-[#fbfaf7] shadow-[0_8px_30px_rgba(35,54,49,0.05)] xl:min-h-0">
