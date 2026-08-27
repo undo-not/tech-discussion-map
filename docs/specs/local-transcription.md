@@ -29,7 +29,7 @@ MVP must not infer an individual identity from the remote mixed stream.
 - Teams PCM: 48 kHz stereo signed 16-bit little endian, three-frame boxcar low-passでdownmixしてから3:1 decimationし、shared input formatへ変換する。
 - Companion listener: exactly `127.0.0.1:43117`.
 - Allowed UI origins: `http://127.0.0.1:3000` and `http://localhost:3000`.
-- Browser authorization: a 256-bit companion launch secret delivered through a URL fragment, followed by a separate 256-bit random bearer token that is memory-only, Origin-bound, and expires in ten minutes.
+- Browser authorization: launcherがcompanionへenvironment経由、UI serverへ起動後のloopback HTTP bodyで一度だけ渡す256-bit launch secretを使う。companionは直ちにenvironment entryを削除し、UI serverはmemoryだけに保持する。browserはsecretをURL、history、command lineへ載せず、same-origin POSTでUI serverから取得してcompanion bootstrapにだけ使う。その後の256-bit random bearerはmemory-onlyかつOrigin-boundで、未使用なら10分で失効し、使用中は各認証requestで10分延長する。401時はlaunch secretから一度だけ再bootstrapして同じlocal sessionを継続する。
 - Worker IPC: versioned `TMI1` input and `TMO1` output frames with reserved-byte and size validation.
 - Raw audio has no file, IndexedDB, localStorage, log, telemetry, crash attachment, or external network sink.
 - Meeting runtime has no model download path.

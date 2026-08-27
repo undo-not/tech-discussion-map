@@ -1,5 +1,5 @@
 import { parseTranscriptUtterance, type TranscriptUtterance, type UtteranceSource } from '../../domain/transcription/utterance.ts';
-import { consumeLocalLaunchSecret } from '../companion/launch-secret.ts';
+import { getLocalLaunchSecret } from '../companion/launch-secret.ts';
 
 const companionOrigin = 'http://127.0.0.1:43117';
 const maximumAudioChunkBytes = 128 * 1024;
@@ -27,6 +27,7 @@ export class LocalCompanionTranscriptionClient {
   #closed = false;
   #queuedAudioBytes = 0;
   #sendChain: Promise<void> = Promise.resolve();
+  #connecting: Promise<void> | null = null;
 
   constructor(source: UtteranceSource, onUtterance: (utterance: TranscriptUtterance) => void) {
     this.#source = source;
@@ -36,16 +37,7 @@ export class LocalCompanionTranscriptionClient {
   onFailure: (reason: string) => void = () => undefined;
 
   async start(): Promise<void> {
-    const bootstrap = await readJson(await fetch(companionUrl('/v1/bootstrap'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ launchSecret: consumeLocalLaunchSecret() }),
-      cache: 'no-store',
-    })) as { token?: unknown };
-    if (typeof bootstrap.token !== 'string' || !/^[a-f0-9]{64}$/.test(bootstrap.token)) {
-      throw new Error('local-engine-invalid-bootstrap');
-    }
-    this.#token = bootstrap.token;
+    await this.#connect();
     const started = await readJson(await this.#request('/v1/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -98,6 +90,19 @@ export class LocalCompanionTranscriptionClient {
     if (!response.ok) throw new Error(`local-engine-${response.status}`);
   }
 
+  async #connect(): Promise<void> {
+    if (this.#token) return;
+    if (!this.#connecting) this.#connecting = (async () => {
+      const bootstrap = await readJson(await fetch(companionUrl('/v1/bootstrap'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launchSecret: await getLocalLaunchSecret() }), cache: 'no-store', credentials: 'omit',
+      })) as { token?: unknown };
+      if (typeof bootstrap.token !== 'string' || !/^[a-f0-9]{64}$/.test(bootstrap.token)) throw new Error('local-engine-invalid-bootstrap');
+      this.#token = bootstrap.token;
+    })().finally(() => { this.#connecting = null; });
+    await this.#connecting;
+  }
+
   async #poll(): Promise<void> {
     while (!this.#closed) {
       try {
@@ -122,12 +127,20 @@ export class LocalCompanionTranscriptionClient {
     }
   }
 
-  #request(path: string, init: RequestInit): Promise<Response> {
-    return fetch(companionUrl(path), {
+  async #request(path: string, init: RequestInit): Promise<Response> {
+    let response = await fetch(companionUrl(path), {
       ...init,
       credentials: 'omit',
       headers: { ...init.headers, Authorization: `Bearer ${this.#token}` },
     });
+    if (response.status === 401) {
+      this.#token = '';
+      await this.#connect();
+      response = await fetch(companionUrl(path), {
+        ...init, credentials: 'omit', headers: { ...init.headers, Authorization: `Bearer ${this.#token}` },
+      });
+    }
+    return response;
   }
 
   #fail(reason: string): void {

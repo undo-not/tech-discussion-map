@@ -1,12 +1,22 @@
 const launchSecretPattern = /^[a-f0-9]{64}$/;
-let cachedLaunchSecret = '';
+let cachedLaunchSecret: Promise<string> | null = null;
 
-export function consumeLocalLaunchSecret(location: Location = window.location, historyApi: History = window.history): string {
+export function getLocalLaunchSecret(fetchImpl: typeof fetch = fetch): Promise<string> {
   if (cachedLaunchSecret) return cachedLaunchSecret;
-  const parameters = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : location.hash);
-  const candidate = parameters.get('techmap-launch') ?? '';
-  if (!launchSecretPattern.test(candidate)) throw new Error('local-launch-secret-required');
-  cachedLaunchSecret = candidate;
-  historyApi.replaceState(null, '', `${location.pathname}${location.search}`);
+  cachedLaunchSecret = fetchImpl('/api/local-launch', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request: 'local-launch-secret' }),
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`local-launch-${response.status}`);
+    const value = await response.json() as { launchSecret?: unknown };
+    if (typeof value.launchSecret !== 'string' || !launchSecretPattern.test(value.launchSecret)) throw new Error('local-launch-invalid-secret');
+    return value.launchSecret;
+  }).catch((error) => {
+    cachedLaunchSecret = null;
+    throw error;
+  });
   return cachedLaunchSecret;
 }

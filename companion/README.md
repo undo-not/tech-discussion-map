@@ -10,6 +10,6 @@ Build the native worker and install the model before a meeting, then run:
 node companion/local-transcription-host.mjs
 ```
 
-Open the exact `http://127.0.0.1:3000/#techmap-launch=...` URL printed at startup. The fragment is consumed into browser memory and removed from the address bar before bootstrap. Restarting the companion rotates the secret and invalidates prior bootstrap attempts.
+Start the real-meeting runtime with `powershell -ExecutionPolicy Bypass -File scripts/start-mvp.ps1`. The launcher provisions a random secret to the UI server over a loopback request body before opening a plain URL. The secret never appears in a URL, browser history, process argument, file, or console. Restarting the launcher rotates it and invalidates prior bootstrap attempts.
 
 The browser UI remains a separate Vinext process bound to loopback. Whisper setup is described in `native/transcription/README.md`; caption OCR setup and selection behavior are described in `native/teams-captions/README.md`.

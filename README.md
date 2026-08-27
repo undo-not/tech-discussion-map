@@ -34,9 +34,35 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 
 検証コマンドは[AGENTS.md](AGENTS.md)を参照してください。
 
-Windows音声helperのbuildと非capturing capability checkは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。実会議captureはIssue #6の同意・privacy gateが完成するまで実行しません。
+## Windows MVPを試す
 
-Issue #17/#19ではTeams字幕入力を実装しています。対象PCでUI Automation probeがtimeoutしたため、実装本線は選択矩形local OCRです。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、Teams top-level windowからUI Automation rootを取得できるかだけをローカル表示します。OCRは全参加者同意と利用者のdrag選択後に、選択矩形だけをmemory処理します。
+最初にVisual Studio Build Tools、Windows SDK、CMake、Node.js 22.18以降、pnpmを用意し、native helperとweb appを一括buildします。transcription helperの初回buildは固定commitのwhisper.cppを取得するためnetworkを使います。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-mvp.ps1
+```
+
+次に組織で承認されたTesseract 5.5.3 distributionを、実測SHA-256を指定して導入します。scriptはdownloadせず、検証済みfileだけを`%LOCALAPPDATA%\TechMapLive\ocr\current`へcopyします。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup-tesseract.ps1 `
+  -DistributionDirectory C:\approved\tesseract-5.5.3 `
+  -TesseractSha256 <64桁の実測hash> `
+  -JapaneseSha256 <64桁の実測hash> `
+  -EnglishSha256 <64桁の実測hash>
+```
+
+起動前診断と起動は次の一commandです。UIとcompanionは`127.0.0.1`だけで動作し、このterminalでCtrl+Cを押すとlauncherが所有する子processを終了します。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-mvp.ps1
+```
+
+まず「合成デモ」でtimeline→分析→mind mapを確認できます。実Teamsでは全参加者の同意を確認し、「Teams字幕OCRを開始」から字幕本文と発話者を含む範囲だけをdragします。OCRが利用できない場合に限り、「Teams音声を診断」→「診断済み音声フォールバックを開始」の二操作でprocess限定音声＋microphone＋local Whisperを選べます。OCR失敗から音声へ自動切替しません。音声fallbackは発話者名を推測せず、相手側をgroupとして扱います。
+
+詳しい起動境界は[Windows local MVP launch specification](docs/specs/local-runtime-launch.md)、OCRは[Teams caption source capability specification](docs/specs/teams-caption-source.md)、音声fallbackは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。
+
+Teams字幕入力の実装本線は選択矩形local OCRです。対象PCでUI Automation probeがtimeoutしたためUIAは既定経路にしていません。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、Teams top-level windowからUI Automation rootを取得できるかだけをローカル表示します。OCRは全参加者同意と利用者のdrag選択後に、選択矩形だけをmemory処理します。
 
 ```powershell
 cmake -S native/teams-captions -B native/teams-captions/build -A x64
@@ -47,8 +73,8 @@ native/teams-captions/build/Release/techmap-captions.exe probe
 
 `probe-at-cursor`は本人のみの合成テスト会議または全参加者同意済みのテスト専用です。診断結果もGitHubへ貼り付けません。詳細は[Teams caption source capability specification](docs/specs/teams-caption-source.md)を参照してください。
 
-字幕OCRを使う前に、組織で承認されたTesseract 5.5.3 Windows distributionと`jpn`／`eng` traineddataを用意し、実測SHA-256を指定して`powershell -ExecutionPolicy Bypass -File scripts/setup-tesseract.ps1 ...`を実行します。scriptはdownloadせず、検証済みdistributionを`%LOCALAPPDATA%\TechMapLive\ocr\current`へcopyします。詳しい引数と操作は[native caption helper README](native/teams-captions/README.md)を参照してください。
+詳しいTesseract setup引数と操作は[native caption helper README](native/teams-captions/README.md)を参照してください。
 
-ローカル文字起こしは[local transcription specification](docs/specs/local-transcription.md)に従います。会議前に`powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-model.ps1`でchecksum検証済みmodelを導入し、native workerをbuildしてから`node companion/local-transcription-host.mjs`を起動します。companionが表示する一度限りの`#techmap-launch=...`付きURLを同じWindows userのbrowserで開いてください。fragmentはHTTPへ送られず、UIがmemoryへ取り込んだ直後にaddress barから消去します。公開URLではマイク入力は無効で、合成デモだけが動作します。
+ローカル文字起こしは[local transcription specification](docs/specs/local-transcription.md)に従います。音声fallbackを使う場合は、会議前に`powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-model.ps1`でchecksum検証済みmodelを導入します。実会議runtimeは`start-mvp.ps1`から起動してください。launch secretはURLやconsoleへ出さず、launcher、UI server、companionのmemoryだけで受け渡します。公開URLではマイク入力は無効で、合成デモだけが動作します。
 
 会議dataの同意、暗号化保存、保持、削除、redaction、OpenAI保持条件は[privacy boundary](docs/specs/privacy-boundary.md)に従います。API keyは`powershell -ExecutionPolicy Bypass -File scripts/setup-openai-key.ps1`の非表示promptからWindows Credential Managerへ保存します。keyを`.env`、browser、command line、Issue、PR、logへ入れないでください。

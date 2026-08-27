@@ -1,4 +1,4 @@
-import { consumeLocalLaunchSecret } from '../companion/launch-secret.ts';
+import { getLocalLaunchSecret } from '../companion/launch-secret.ts';
 import { createPrivacySafeStructuredResponsesRequest } from '../privacy/openai-request-policy.ts';
 import { parseAnalyzerOutput, type AnalysisDelta, type AnalysisState } from '../../domain/analysis/contract.ts';
 import { analysisPromptHash, createRedactedAnalysisInput } from '../../domain/analysis/prompt.ts';
@@ -35,11 +35,11 @@ function extractOutputText(value: unknown): string {
 export class LocalOpenAiAnalyzer {
   #token = '';
   readonly #fetch: typeof fetch;
-  readonly #launchSecret: () => string;
+  readonly #launchSecret: () => string | Promise<string>;
 
-  constructor(options: { fetchImpl?: typeof fetch; launchSecret?: () => string } = {}) {
+  constructor(options: { fetchImpl?: typeof fetch; launchSecret?: () => string | Promise<string> } = {}) {
     this.#fetch = options.fetchImpl ?? fetch;
-    this.#launchSecret = options.launchSecret ?? (() => consumeLocalLaunchSecret());
+    this.#launchSecret = options.launchSecret ?? (() => getLocalLaunchSecret());
   }
 
   async analyze(model: string, redactedWindow: RedactedText, state: AnalysisState): Promise<AnalysisDelta> {
@@ -74,7 +74,7 @@ export class LocalOpenAiAnalyzer {
     try {
       const response = await this.#fetch(companionUrl('/v1/bootstrap'), {
         method: 'POST', credentials: 'omit', cache: 'no-store', signal: controller.signal, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ launchSecret: this.#launchSecret() }),
+        body: JSON.stringify({ launchSecret: await this.#launchSecret() }),
       });
       if (!response.ok) throw new Error(`analysis-bootstrap-${response.status}`);
       const value = await response.json() as { token?: unknown };

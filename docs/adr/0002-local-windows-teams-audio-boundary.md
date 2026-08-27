@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Source: Issue #5
-- Reassessment: Issue #17 / ADR-0007はTeamsライブキャプションを第一候補にできるか検証中。decision gate完了までは本ADRが有効。
+- Reassessment: ADR-0007によりMVP標準入力ではなく、利用者が診断・開始を別々に明示する音声fallbackへ変更。process限定とprivacy境界はfallbackに引き続き適用する。
 
 ## Context
 
@@ -12,7 +12,7 @@ Teams連携には、端末音声、Teams captions、Microsoft Graph transcript�
 
 ## Decision
 
-初期の実会議入力は、Windowsローカルcompanion appに分離した2つのadapterで取り込む。
+字幕OCRを利用できない場合の明示fallbackは、Windowsローカルcompanion appに分離した2つのadapterで取り込む。
 
 1. 利用者自身の発話は、明示的に選択したmicrophoneから取得する。
 2. Teamsから再生される相手側音声は、Windows application loopbackでTeamsの対象process treeに限定して取得する。
@@ -43,8 +43,8 @@ flowchart LR
 | 方式 | リアルタイム／話者 | 権限・管理者作業 | 同意・platform制約 | 実装・運用費 | 判断 |
 |---|---|---|---|---|---|
 | microphone only | 可。利用者側のみ確実 | OS microphone許可 | アプリ側の同意確認 | 小。ローカルcompute | process loopback非対応時の縮退 |
-| Teams process loopback + microphone | 可。利用者／相手側groupまで | OS許可。Teams tenant変更なし | アプリ側の同意確認。対象process以外を取得しない | 中。Windows native adapterとローカルcompute | MVP採用 |
-| Teams live captions | 表示はリアルタイム。Teams表示に依存 | Teams policyに依存 | 取得用の公開app APIを確認できない | 非公式取得は高い保守・規約risk | 不採用。DOM／screen scrapingもしない |
+| Teams process loopback + microphone | 可。利用者／相手側groupまで | OS許可。Teams tenant変更なし | アプリ側の同意確認。対象process以外を取得しない | 中。Windows native adapterとローカルcompute | 明示fallback |
+| Teams live captionsの選択矩形OCR | 表示はリアルタイム。表示話者をalias化 | Teams policyと画面表示に依存 | 公開app APIではなく選択矩形だけをlocal処理 | UI変更耐性の継続評価が必要 | ADR-0007でMVP標準入力 |
 | Microsoft Graph transcript | 会議終了後。speakerはtenant設定次第 | Graph permission、transcript access、speaker attribution設定 | tenant policy、meeting固有RSCまたは組織wide permission | 中。metered APIと通知処理 | 将来の事後照合候補 |
 | application-hosted media bot | 可。botが得るmedia／meeting contextに依存 | Entra app、media permission、admin consent | recording status通知とTeams platform要件 | 大。Azure Windows Server、public IP／port、継続更新 | ローカル・非公開境界に反するため不採用 |
 | Teams meeting side panel | UIは会議中。media取得手段ではない | Teams app登録・配布 | HTTPS hostingとTeams CSP | 中。hostingと配布運用 | 将来UI候補。MVPでは不採用 |

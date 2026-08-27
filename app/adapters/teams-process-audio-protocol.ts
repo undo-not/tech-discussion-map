@@ -20,11 +20,17 @@ function parseJson(payload: Uint8Array): unknown {
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload));
 }
 
+function hasExactKeys(value: object, expected: string[]): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
 function parseState(payload: Uint8Array): TeamsAudioFrame {
   const value = parseJson(payload);
   if (
     typeof value !== 'object' ||
     value === null ||
+    !hasExactKeys(value, ['reason', 'state']) ||
     !('state' in value) ||
     !isCaptureState(value.state) ||
     !('reason' in value) ||
@@ -41,6 +47,7 @@ function parseFormat(payload: Uint8Array): TeamsAudioFrame {
   if (
     typeof value !== 'object' ||
     value === null ||
+    !hasExactKeys(value, ['bitsPerSample', 'channels', 'encoding', 'sampleRate']) ||
     !('sampleRate' in value) ||
     value.sampleRate !== 48_000 ||
     !('channels' in value) ||
@@ -64,11 +71,18 @@ function parseFormat(payload: Uint8Array): TeamsAudioFrame {
 export class TeamsProcessAudioProtocolParser {
   #buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
 
+  clear(): void {
+    this.#buffer.fill(0);
+    this.#buffer = new Uint8Array();
+  }
+
   push(chunk: Uint8Array): TeamsAudioFrame[] {
     if (chunk.byteLength > maximumPayloadSize + headerSize) {
       throw new Error('Teams audio IPC chunk exceeds the memory boundary');
     }
-    this.#buffer = appendBytes(this.#buffer, chunk);
+    const previous = this.#buffer;
+    this.#buffer = appendBytes(previous, chunk);
+    previous.fill(0);
     const frames: TeamsAudioFrame[] = [];
 
     while (this.#buffer.byteLength >= headerSize) {
@@ -84,8 +98,10 @@ export class TeamsProcessAudioProtocolParser {
       if (payloadSize > maximumPayloadSize) throw new Error('Teams audio frame exceeds the memory boundary');
       if (this.#buffer.byteLength < headerSize + payloadSize) break;
 
-      const payload = this.#buffer.slice(headerSize, headerSize + payloadSize);
-      this.#buffer = this.#buffer.slice(headerSize + payloadSize);
+      const consumed = this.#buffer;
+      const payload = consumed.slice(headerSize, headerSize + payloadSize);
+      this.#buffer = consumed.slice(headerSize + payloadSize);
+      consumed.fill(0);
 
       if (frameType === 1) frames.push(parseState(payload));
       else if (frameType === 2) {

@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createPrivacyStore } from './privacy-store.mjs';
+import { attachTeamsAudioBridge, runTeamsAudioProbe } from './teams-audio-bridge.mjs';
 import { assertPrivacySafeResponsesRequest } from '../app/adapters/privacy/openai-request-policy.ts';
 import { analysisStructuredOutput } from '../app/domain/analysis/schema.ts';
 
@@ -16,7 +17,7 @@ const maximumWorkerFrameBytes = 64 * 1024;
 const maximumPrivacyRequestBytes = 1024 * 1024;
 const maximumAnalysisRequestBytes = 32 * 1024;
 const allowedOrigins = new Set(['http://127.0.0.1:3000', 'http://localhost:3000']);
-const tokenLifetimeMs = 10 * 60 * 1000;
+const defaultTokenLifetimeMs = 10 * 60 * 1000;
 
 function sendJson(response, status, value, origin) {
   const encoded = Buffer.from(JSON.stringify(value));
@@ -67,21 +68,34 @@ function frameForWorker(type, payload = Buffer.alloc(0)) {
 }
 
 function parseWorkerEvents(state, chunk) {
-  state.buffer = Buffer.concat([state.buffer, chunk]);
+  const previous = state.buffer;
+  state.buffer = Buffer.concat([previous, chunk]);
+  previous.fill(0);
   const parsed = [];
-  while (state.buffer.length >= 12) {
-    if (state.buffer.subarray(0, 4).toString('ascii') !== 'TMO1' || state.buffer[4] !== 1 || state.buffer[6] !== 0 || state.buffer[7] !== 0) {
-      throw new Error('invalid-worker-protocol');
+  try {
+    while (state.buffer.length >= 12) {
+      if (state.buffer.subarray(0, 4).toString('ascii') !== 'TMO1' || state.buffer[4] !== 1 || state.buffer[6] !== 0 || state.buffer[7] !== 0) {
+        throw new Error('invalid-worker-protocol');
+      }
+      const size = state.buffer.readUInt32LE(8);
+      if (size > maximumWorkerFrameBytes) throw new Error('worker-frame-too-large');
+      if (state.buffer.length < 12 + size) break;
+      const type = state.buffer[5];
+      const consumed = state.buffer;
+      const payload = consumed.subarray(12, 12 + size);
+      const remaining = Buffer.from(consumed.subarray(12 + size));
+      let value;
+      try {
+        if (type !== 1) throw new Error('unknown-worker-frame');
+        value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload));
+      } finally { consumed.fill(0); }
+      state.buffer = remaining;
+      parsed.push(value);
     }
-    const size = state.buffer.readUInt32LE(8);
-    if (size > maximumWorkerFrameBytes) throw new Error('worker-frame-too-large');
-    if (state.buffer.length < 12 + size) break;
-    const type = state.buffer[5];
-    const payload = state.buffer.subarray(12, 12 + size);
-    state.buffer = state.buffer.subarray(12 + size);
-    if (type !== 1) throw new Error('unknown-worker-frame');
-    const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload));
-    parsed.push(value);
+  } catch (error) {
+    state.buffer.fill(0);
+    state.buffer = Buffer.alloc(0);
+    throw error;
   }
   return parsed;
 }
@@ -131,6 +145,7 @@ function defaultPaths(environment) {
     modelPath: resolve(modelRoot, 'ggml-tiny.bin'),
     workerPath: resolve(scriptDirectory, '..', 'native', 'transcription', 'build', 'Release', 'techmap-transcriber.exe'),
     captionWorkerPath: resolve(scriptDirectory, '..', 'native', 'teams-captions', 'build', 'Release', 'techmap-captions.exe'),
+    audioWorkerPath: resolve(scriptDirectory, '..', 'native', 'windows-audio', 'build', 'Release', 'techmap-audio.exe'),
   };
 }
 
@@ -145,14 +160,20 @@ export function createCompanionServer(options = {}) {
   const modelPath = resolve(options.modelPath ?? defaults.modelPath);
   const workerPath = resolve(options.workerPath ?? environment.TECHMAP_TRANSCRIBER_PATH ?? defaults.workerPath);
   const captionWorkerPath = resolve(options.captionWorkerPath ?? environment.TECHMAP_CAPTIONS_PATH ?? defaults.captionWorkerPath);
+  const audioWorkerPath = resolve(options.audioWorkerPath ?? environment.TECHMAP_AUDIO_PATH ?? defaults.audioWorkerPath);
   const spawnWorker = options.spawnWorker ?? ((args) => spawn(workerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
   const spawnCaptionWorker = options.spawnCaptionWorker ?? ((args) => spawn(captionWorkerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
+  const spawnAudioWorker = options.spawnAudioWorker ?? ((args) => spawn(audioWorkerPath, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }));
   const privacyStore = options.privacyStore ?? createPrivacyStore({ environment });
+  const now = options.now ?? Date.now;
+  const tokenLifetimeMs = options.tokenLifetimeMs ?? defaultTokenLifetimeMs;
+  if (!Number.isSafeInteger(tokenLifetimeMs) || tokenLifetimeMs < 1_000 || tokenLifetimeMs > 24 * 60 * 60 * 1000) throw new Error('invalid-token-lifetime');
   const launchSecret = options.launchSecret ?? randomBytes(32).toString('hex');
   if (!/^[a-f0-9]{64}$/.test(launchSecret)) throw new Error('invalid-launch-secret');
   const tokens = new Map();
   const sessions = new Map();
   const captionSessions = new Map();
+  const teamsAudioSessions = new Map();
   const globalAnalysisBudget = { windowStart: Date.now(), calls: 0 };
 
   if (!pathIsWithin(defaults.modelRoot, modelPath)) throw new Error('Model must remain under LocalAppData\\TechMapLive\\models');
@@ -181,19 +202,20 @@ export function createCompanionServer(options = {}) {
       try { configuration = body ? JSON.parse(body.toString('utf8')) : null; }
       catch { configuration = null; }
       if (!configuration || request.headers['content-type'] !== 'application/json' || Object.keys(configuration).length !== 1 || !tokenMatches(launchSecret, configuration.launchSecret)) return sendJson(response, 401, { error: 'launch-secret-required' }, origin);
-      for (const [token, entry] of tokens) if (entry.expiresAt < Date.now()) tokens.delete(token);
+      for (const [token, entry] of tokens) if (entry.expiresAt < now()) tokens.delete(token);
       while (tokens.size >= 32) tokens.delete(tokens.keys().next().value);
       const token = randomBytes(32).toString('hex');
-      tokens.set(token, { origin, expiresAt: Date.now() + tokenLifetimeMs, analysisWindowStart: Date.now(), analysisCalls: 0 });
+      tokens.set(token, { origin, expiresAt: now() + tokenLifetimeMs, analysisWindowStart: now(), analysisCalls: 0 });
       return sendJson(response, 200, { token }, origin);
     }
 
     const authorization = request.headers.authorization;
     const actualToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
     const tokenEntry = [...tokens.entries()].find(([token]) => tokenMatches(token, actualToken));
-    if (!tokenEntry || tokenEntry[1].origin !== origin || tokenEntry[1].expiresAt < Date.now()) {
+    if (!tokenEntry || tokenEntry[1].origin !== origin || tokenEntry[1].expiresAt < now()) {
       return sendJson(response, 401, { error: 'unauthorized' }, origin);
     }
+    tokenEntry[1].expiresAt = now() + tokenLifetimeMs;
 
     if (request.method === 'POST' && url.pathname === '/v1/analysis') {
       const tokenState = tokenEntry[1];
@@ -351,10 +373,97 @@ export function createCompanionServer(options = {}) {
       return sendJson(response, 404, { error: 'not-found' }, origin);
     }
 
+    if (request.method === 'POST' && url.pathname === '/v1/teams-audio/probe') {
+      const body = await readBody(request, maximumJsonBytes).catch(() => null);
+      let configuration;
+      try { configuration = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; }
+      catch { configuration = null; }
+      if (!configuration || !exactKeys(configuration, ['consentConfirmed']) || configuration.consentConfirmed !== true) {
+        return sendJson(response, 400, { error: 'teams-audio-consent-required' }, origin);
+      }
+      if (!existsSync(audioWorkerPath)) return sendJson(response, 503, { error: 'teams-audio-helper-not-installed' }, origin);
+      try { return sendJson(response, 200, await runTeamsAudioProbe(spawnAudioWorker), origin); }
+      catch { return sendJson(response, 503, { error: 'teams-audio-probe-failed' }, origin); }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/v1/teams-audio-sessions') {
+      const body = await readBody(request, maximumJsonBytes).catch(() => null);
+      let configuration;
+      try { configuration = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; }
+      catch { configuration = null; }
+      if (!configuration || !exactKeys(configuration, ['consentConfirmed', 'processId']) || configuration.consentConfirmed !== true ||
+          !Number.isSafeInteger(configuration.processId) || configuration.processId < 1 || configuration.processId > 0xffff_ffff) {
+        return sendJson(response, 400, { error: 'invalid-teams-audio-session' }, origin);
+      }
+      if (!existsSync(audioWorkerPath) || !existsSync(modelPath) || !existsSync(workerPath)) {
+        return sendJson(response, 503, { error: 'teams-audio-engine-not-installed' }, origin);
+      }
+      for (const [id, existing] of teamsAudioSessions) if (existing.stopped) teamsAudioSessions.delete(id);
+      if (teamsAudioSessions.size >= 1) return sendJson(response, 429, { error: 'too-many-teams-audio-sessions' }, origin);
+      let audioWorker;
+      let transcriptionWorker;
+      try {
+        audioWorker = spawnAudioWorker(['capture', '--pid', String(configuration.processId), '--consent-confirmed']);
+        transcriptionWorker = spawnWorker(['--model', modelPath, '--source', 'remote', '--language', 'ja']);
+      } catch {
+        if (audioWorker && !audioWorker.killed) audioWorker.kill();
+        if (transcriptionWorker && !transcriptionWorker.killed) transcriptionWorker.kill();
+        return sendJson(response, 503, { error: 'teams-audio-engine-start-failed' }, origin);
+      }
+      const id = randomUUID();
+      const session = { id, stopped: false, cursor: 0, events: [], bridge: null };
+      const pushEvent = (value) => {
+        if (session.stopped) return;
+        session.cursor += 1;
+        session.events.push({ cursor: session.cursor, value });
+        if (session.events.length > 256) session.events.shift();
+      };
+      session.bridge = attachTeamsAudioBridge({
+        audioWorker,
+        transcriptionWorker,
+        frameForWorker,
+        parseWorkerEvents,
+        onCaptureState: (event) => pushEvent({ type: 'capture-state', state: event.state, reason: event.reason }),
+        onUtterance: (utterance) => pushEvent({ type: 'utterance', utterance }),
+        onFailure: (reason) => {
+          pushEvent({ type: 'capture-state', state: 'degraded-microphone-only', reason });
+          session.stopped = true;
+          setTimeout(() => teamsAudioSessions.delete(session.id), 60_000).unref();
+        },
+      });
+      teamsAudioSessions.set(id, session);
+      return sendJson(response, 201, { sessionId: id }, origin);
+    }
+
+    const teamsAudioMatch = /^\/v1\/teams-audio-sessions\/([a-f0-9-]{36})(?:\/(events|stop))?$/.exec(url.pathname);
+    if (teamsAudioMatch) {
+      const teamsAudioSession = teamsAudioSessions.get(teamsAudioMatch[1]);
+      if (!teamsAudioSession) return sendJson(response, 404, { error: 'teams-audio-session-not-found' }, origin);
+      const action = teamsAudioMatch[2];
+      if (request.method === 'GET' && action === 'events') {
+        const after = Number(url.searchParams.get('after') ?? '0');
+        if (!Number.isSafeInteger(after) || after < 0) return sendJson(response, 400, { error: 'invalid-cursor' }, origin);
+        if (!teamsAudioSession.events.some((event) => event.cursor > after) && !teamsAudioSession.stopped) await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+        return sendJson(response, 200, {
+          cursor: teamsAudioSession.cursor,
+          events: teamsAudioSession.events.filter((event) => event.cursor > after).map((event) => event.value),
+          stopped: teamsAudioSession.stopped,
+        }, origin);
+      }
+      if (request.method === 'POST' && action === 'stop') {
+        teamsAudioSession.stopped = true;
+        teamsAudioSession.bridge.stop();
+        teamsAudioSession.events.length = 0;
+        setTimeout(() => teamsAudioSessions.delete(teamsAudioSession.id), 60_000).unref();
+        return sendJson(response, 200, { state: 'stopped' }, origin);
+      }
+      return sendJson(response, 404, { error: 'not-found' }, origin);
+    }
+
     if (request.method === 'POST' && url.pathname === '/v1/sessions') {
       const body = await readBody(request, maximumJsonBytes).catch(() => null);
       let configuration;
-      try { configuration = body ? JSON.parse(body.toString('utf8')) : null; } catch { configuration = null; }
+      try { configuration = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; } catch { configuration = null; }
       if (
         !configuration || !['local', 'remote'].includes(configuration.source) ||
         configuration.sampleRate !== 16_000 || configuration.channels !== 1 || configuration.encoding !== 'pcm-s16le'
@@ -381,6 +490,12 @@ export function createCompanionServer(options = {}) {
       });
       worker.on('error', () => { session.stopped = true; });
       worker.on('exit', () => { session.stopped = true; });
+      worker.stdin.on('error', () => {
+        session.stopped = true;
+        session.parser.buffer.fill(0);
+        session.parser.buffer = Buffer.alloc(0);
+        if (!worker.killed) worker.kill();
+      });
       return sendJson(response, 201, { sessionId: id }, origin);
     }
 
@@ -395,7 +510,13 @@ export function createCompanionServer(options = {}) {
       if (!audio || audio.length === 0 || audio.length % 2 !== 0 || session.paused || session.stopped) {
         return sendJson(response, 409, { error: 'audio-not-accepted' }, origin);
       }
-      if (!session.worker.stdin.write(frameForWorker(1, audio))) await new Promise((resolveDrain) => session.worker.stdin.once('drain', resolveDrain));
+      const framed = frameForWorker(1, audio);
+      try {
+        await new Promise((resolveWrite, rejectWrite) => session.worker.stdin.write(framed, (error) => error ? rejectWrite(error) : resolveWrite()));
+      } catch {
+        session.stopped = true;
+        return sendJson(response, 503, { error: 'local-engine-write-failed' }, origin);
+      } finally { framed.fill(0); }
       return sendJson(response, 202, { accepted: true }, origin);
     }
     if (request.method === 'GET' && action === 'events') {
@@ -416,7 +537,8 @@ export function createCompanionServer(options = {}) {
     if (request.method === 'POST' && action === 'stop') {
       if (session.stopped) return sendJson(response, 200, { state: 'stopped' }, origin);
       session.stopped = true;
-      session.worker.stdin.end(frameForWorker(2));
+      const stopFrame = frameForWorker(2);
+      session.worker.stdin.end(stopFrame, () => stopFrame.fill(0));
       setTimeout(() => { if (!session.worker.killed) session.worker.kill(); }, 3_000).unref();
       setTimeout(() => sessions.delete(session.id), 60_000).unref();
       return sendJson(response, 200, { state: 'stopped' }, origin);
@@ -431,21 +553,29 @@ export function createCompanionServer(options = {}) {
       session.events.length = 0;
       if (session.worker && !session.worker.killed) session.worker.kill();
     }
+    for (const session of teamsAudioSessions.values()) session.bridge.stop();
     sessions.clear();
     captionSessions.clear();
+    teamsAudioSessions.clear();
     tokens.clear();
   });
   return server;
 }
 
 export function listen(options = {}) {
-  const launchSecret = randomBytes(32).toString('hex');
+  const launchSecret = options.launchSecret ?? randomBytes(32).toString('hex');
   const server = createCompanionServer({ ...options, launchSecret });
   const port = options.port ?? defaultPort;
-  server.listen(port, loopbackHost, () => process.stdout.write(`TechMap local companion ready. Open http://${loopbackHost}:3000/#techmap-launch=${launchSecret}\n`));
+  server.listen(port, loopbackHost, () => process.stdout.write(`TechMap local companion ready on http://${loopbackHost}:${port}.\n`));
   return server;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) listen();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const cliLaunchSecret = process.env.TECHMAP_LAUNCH_SECRET || undefined;
+  delete process.env.TECHMAP_LAUNCH_SECRET;
+  listen({
+    launchSecret: cliLaunchSecret,
+  });
+}
 
 export { allowedOrigins, defaultPort, frameForWorker, loopbackHost, maximumAudioBytes, parseWorkerEvents, validateCaptionWorkerEvent };
