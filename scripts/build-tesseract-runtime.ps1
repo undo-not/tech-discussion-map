@@ -86,8 +86,9 @@ try {
 
   $executables = @(Get-ChildItem -LiteralPath $buildRoot -Recurse -File -Filter 'tesseract.exe')
   if ($executables.Count -ne 1) { throw "Expected one built tesseract.exe, found $($executables.Count)." }
-  $versionOutput = (& $executables[0].FullName --version 2>&1 | Select-Object -First 1)
-  if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^tesseract 5\.5\.3(?:\s|$)') { throw 'Built Tesseract version verification failed.' }
+  $versionOutput = @(& $executables[0].FullName --version 2>&1)
+  $versionExitCode = $LASTEXITCODE
+  if ($versionExitCode -ne 0 -or $versionOutput[0] -notmatch '^tesseract 5\.5\.3(?:\s|$)') { throw "Built Tesseract version verification failed with exit code $versionExitCode." }
 
   New-Item -ItemType Directory -Path (Join-Path $outputRoot 'tessdata') -Force | Out-Null
   Copy-Item -LiteralPath $executables[0].FullName -Destination (Join-Path $outputRoot 'tesseract.exe')
@@ -126,8 +127,9 @@ try {
   $originalPath = $env:Path
   try {
     $env:Path = "$(Join-Path $env:SystemRoot 'System32');$env:SystemRoot"
-    $isolatedVersion = (& $tesseractPath --version 2>&1 | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0 -or $isolatedVersion -notmatch '^tesseract 5\.5\.3(?:\s|$)') { throw 'Built runtime is not self-contained outside the build environment.' }
+    $isolatedOutput = @(& $tesseractPath --version 2>&1)
+    $isolatedExitCode = $LASTEXITCODE
+    if ($isolatedExitCode -ne 0 -or $isolatedOutput[0] -notmatch '^tesseract 5\.5\.3(?:\s|$)') { throw "Built runtime is not self-contained outside the build environment (exit code $isolatedExitCode)." }
     $languages = & $tesseractPath --tessdata-dir (Join-Path $outputRoot 'tessdata') --list-langs 2>&1
     if ($LASTEXITCODE -ne 0 -or $languages -notcontains 'eng' -or $languages -notcontains 'jpn') { throw 'Built runtime cannot load the pinned eng and jpn models.' }
   } finally {
