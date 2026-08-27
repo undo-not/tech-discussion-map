@@ -106,8 +106,10 @@ test('attested Tesseract build pins source, dependencies, models, and main workf
   const root = resolve(testDirectory, '..', '..');
   const build = await readFile(resolve(root, 'scripts', 'build-tesseract-runtime.ps1'), 'utf8');
   const install = await readFile(resolve(root, 'scripts', 'install-attested-tesseract.ps1'), 'utf8');
+  const setup = await readFile(resolve(root, 'scripts', 'setup-tesseract.ps1'), 'utf8');
   const workflow = await readFile(resolve(root, '.github', 'workflows', 'tesseract-runtime.yml'), 'utf8');
   const manifest = await readFile(resolve(root, 'scripts', 'tesseract-runtime', 'vcpkg.json'), 'utf8');
+  const gitignore = await readFile(resolve(root, '.gitignore'), 'utf8');
   for (const source of [build, install]) {
     assert.match(source, /db0ec62f81b0737fbbe184d8fea40af5738f8eef/);
     assert.match(source, /ddd0023b0eee70986e42ed49d9d4afb8098f212e/);
@@ -127,7 +129,17 @@ test('attested Tesseract build pins source, dependencies, models, and main workf
   assert.match(install, /GitHub CLI must have a valid GitHub, Inc. Authenticode signature/);
   assert.doesNotMatch(install, /Get-Command gh/);
   assert.doesNotMatch(install, /Invoke-WebRequest|Start-BitsTransfer/);
+  assert.match(setup, /Copy-Item -Path \(Join-Path \$sourceRoot '\*'\) -Destination \$stage -Recurse -Force/);
+  assert.match(gitignore, /^data\/local\/$/m);
+  const buildJob = workflow.slice(workflow.indexOf('  build-tesseract-runtime:'), workflow.indexOf('  attest-tesseract-runtime:'));
+  const attestJob = workflow.slice(workflow.indexOf('  attest-tesseract-runtime:'));
+  assert.doesNotMatch(buildJob, /id-token: write|attestations: write|artifact-metadata: write/);
+  assert.match(attestJob, /if: github\.event_name != 'pull_request' && github\.ref == 'refs\/heads\/main'/);
+  assert.match(attestJob, /id-token: write/);
+  assert.match(attestJob, /attestations: write/);
   assert.match(workflow, /actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6/);
+  assert.match(workflow, /With subject-path and no custom predicate inputs, actions\/attest uses SLSA provenance mode/);
+  assert.match(workflow, /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/);
   assert.match(workflow, /runs-on: windows-2025/);
   assert.match(manifest, /"builtin-baseline": "ddd0023b0eee70986e42ed49d9d4afb8098f212e"/);
 });

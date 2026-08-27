@@ -30,9 +30,6 @@ jobs:
     runs-on: windows-2025
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Build pinned static OCR runtime
@@ -41,11 +38,6 @@ jobs:
       - name: Package runtime without repository persistence
         shell: powershell
         run: Compress-Archive -Path "$env:RUNNER_TEMP\techmap-ocr-runtime\*" -DestinationPath "$env:RUNNER_TEMP\techmap-ocr-runtime-windows-x64.zip"
-      - name: Attest runtime provenance
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: '${{ runner.temp }}/techmap-ocr-runtime-windows-x64.zip'
       - name: Upload ephemeral runtime artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -53,3 +45,24 @@ jobs:
           path: '${{ runner.temp }}/techmap-ocr-runtime-windows-x64.zip'
           if-no-files-found: error
           retention-days: 7
+
+  attest-tesseract-runtime:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build-tesseract-runtime
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download runtime produced by the unprivileged build job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: techmap-ocr-runtime-windows-x64
+          path: '${{ runner.temp }}/attested-ocr'
+      - name: Attest main runtime provenance
+        # With subject-path and no custom predicate inputs, actions/attest uses SLSA provenance mode.
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: '${{ runner.temp }}/attested-ocr/techmap-ocr-runtime-windows-x64.zip'

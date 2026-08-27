@@ -10,14 +10,15 @@
 
 Windows.Media.Ocrはdesktop appでpackage identityを必要とし、公開resultにword confidenceを持たない。Tesseract 5はimageをstdin、TSVをstdoutで扱い、word confidenceを返せる。MVPはMSIX化を前提にせず、Tesseract 5.5.3と`jpn`／`eng` traineddataを利用者が指定したSHA-256でsetup時に固定する。
 
-Tesseract projectの5.5.3 annotated tagはGitHubで署名検証済みで、commit `db0ec62f81b0737fbbe184d8fea40af5738f8eef`を参照する。一方、同releaseのWindows installerはGitHub公開SHA-256と一致しても、2026年のtimestampに対して2023年失効のcode-signing certificateを持ち、対象PCのAuthenticode検証が失敗した。このinstallerを信頼rootにせず、署名済みtagのsource archive SHA-512、Microsoft vcpkg baseline、`tessdata_fast` commitとmodel SHA-256を固定したGitHub-hosted Windows buildを採用する。
+Tesseract projectの5.5.3 annotated tagは、2026-08-28にGitHub APIで一回限りのout-of-band署名検証を行い、tag object `6951ffe10ce031374bcd04fe400811da1e7e04ad`がcommit `db0ec62f81b0737fbbe184d8fea40af5738f8eef`を参照することを確認した。build pipelineが暗号学的に再検証するtrust rootはcommit指定source archiveの固定SHA-512であり、tag object値はその手動確認結果を追跡するprovenance記録である。一方、同releaseのWindows installerはGitHub公開SHA-256と一致しても、2026年のtimestampに対して2023年失効のcode-signing certificateを持ち、対象PCのAuthenticode検証が失敗した。このinstallerを信頼rootにせず、固定source archive、Microsoft vcpkg baseline、`tessdata_fast` commitとmodel SHA-256を使うGitHub-hosted Windows buildを採用する。
 
 repositoryのtracked contentにはWindows binary、DLL、traineddataを含めない。main branchの専用workflowは7日保持のephemeral ZIPだけを生成し、GitHub/SigstoreのSLSA build provenance attestationを付ける。local installerはrepository、workflow path、`refs/heads/main`、GitHub-hosted runnerを検証してからZIPを展開し、既存のoffline setupへ実測hashを渡す。attestation取得は会議外のsetup時だけnetworkを使い、OCR runtimeはdownload、PATH探索、network accessを行わない。組織が別distributionを承認している場合は従来のoffline setupを使用できる。
 
 ## Decision
 
 - `%LOCALAPPDATA%\TechMapLive\ocr\current`の固定配置だけを使う。
-- official 5.5.3 tag object、source commit/archive hash、vcpkg baseline/static triplet、`tessdata_fast` commit/model hashをbuild scriptとartifact manifestで固定する。
+- out-of-band検証したofficial 5.5.3 tag objectをprovenance記録として保持し、source commit/archive hash、vcpkg baseline/static triplet、`tessdata_fast` commit/model hashを機械的trust rootとしてbuild scriptとartifact manifestで固定する。
+- pull requestのbuild jobは`contents: read`だけで動かし、OIDCとattestation write権限はmain refの別jobにだけ付与する。
 - local installはartifact attestationを`undo-not/tech-discussion-map/.github/workflows/tesseract-runtime.yml`、main ref、GitHub-hosted runnerへ限定して検証する。ZIPのpath、entry数、展開size、file allowlistも展開前に検証する。
 - setupはTesseract version、executable、`jpn.traineddata`、`eng.traineddata`を検証し、hash manifestをローカルに作る。hash値をrepositoryへ創作・固定しない。
 - runtimeは毎session開始前にmanifestと3ファイルのSHA-256を再検証する。
