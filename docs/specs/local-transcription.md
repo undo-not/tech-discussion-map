@@ -12,7 +12,7 @@ The UI states are `idle`, `requesting-permission`, `starting-local-engine`, `lis
 
 ## Utterance contract
 
-Each utterance contains a bounded ID, monotonic revision, `partial` or `final` phase, `local`／`remote`／`synthetic` source, `self`／`remote-group`／`unknown` speaker label, integer start/end milliseconds, and at most 8,000 characters of text.
+Each utterance contains a bounded ID, monotonic revision, `partial` or `final` phase, `local`／`remote`／`teams-caption`／`synthetic` source, `self`／`remote-group`／`displayed-alias`／`anonymous`／`unknown` speaker label, integer start/end milliseconds, and at most 8,000 characters of text. `displayed-alias` requires a session-only `speaker-1` through `speaker-999` alias; every other speaker label forbids `speakerAlias`. Raw Teams display names never cross the caption adapter boundary.
 
 - Lower or duplicate revisions are ignored.
 - A final utterance cannot regress to partial.
@@ -34,7 +34,7 @@ MVP must not infer an individual identity from the remote mixed stream.
 - Raw audio has no file, IndexedDB, localStorage, log, telemetry, crash attachment, or external network sink.
 - Meeting runtime has no model download path.
 
-Final transcripts are persisted only after explicit checkbox opt-in, through the DPAPI session boundary defined in `privacy-boundary.md`. Browser IndexedDB is not an active persistence target; obsolete plaintext data from earlier builds is purged on startup.
+Final transcripts, including anonymized `teams-caption` utterances, are persisted only after explicit checkbox opt-in, through the DPAPI session boundary defined in `privacy-boundary.md`. Browser IndexedDB is not an active persistence target; obsolete plaintext data from earlier builds is purged on startup.
 
 ## Manual verification boundary
 

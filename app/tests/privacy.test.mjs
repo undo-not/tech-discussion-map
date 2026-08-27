@@ -108,6 +108,22 @@ test('privacy store writes only sealed session data and supports retention/delet
   assert.doesNotMatch(ciphertext.toString('utf8'), /公開用の合成発話/);
   assert.deepEqual((await store.load(session.id)).transcript, session.transcript);
   assert.equal((await store.list())[0].transcriptCount, 1);
+  const captionSession = {
+    ...session,
+    id: '33333333-3333-4333-8333-333333333333',
+    transcript: [{
+      id: 'caption_row-1', revision: 3, phase: 'final', source: 'teams-caption',
+      speaker: 'displayed-alias', speakerAlias: 'speaker-1', startMs: 0, endMs: 1_000,
+      text: '匿名化済みの合成字幕',
+    }],
+  };
+  await store.save(captionSession);
+  assert.deepEqual((await store.load(captionSession.id)).transcript, captionSession.transcript);
+  assert.throws(() => validateStoredSession({
+    ...captionSession,
+    transcript: [{ ...captionSession.transcript[0], speakerAlias: 'Example Person' }],
+  }), /invalid-session-transcript/);
+  assert.equal(await store.remove(captionSession.id), true);
   const corruptId = '22222222-2222-4222-8222-222222222222';
   await writeFile(join(root, `${corruptId}.tmps`), xor(Buffer.from('not-json')));
   assert.equal((await store.list()).find((item) => item.id === corruptId).unreadable, true);

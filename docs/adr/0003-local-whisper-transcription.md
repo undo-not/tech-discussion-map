@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Source: Issue #2
+- Reassessment: Issue #17 / ADR-0007がAcceptedになった場合、本方式は字幕を利用できないときの明示的fallbackになる。
 
 ## Context
 
