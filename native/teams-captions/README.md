@@ -21,7 +21,19 @@ native/teams-captions/build/Release/techmap-captions.exe probe-at-cursor --conse
 
 ## Tesseract setup
 
-このrepositoryとCI artifactはTesseract、DLL、traineddataを含みません。組織で承認されたTesseract 5.5.3 Windows distributionを別途用意し、次の3ファイルのSHA-256を手元で確認してください。
+既定経路は、main branchの`Attested Tesseract runtime` workflowが公式署名tagのsourceから作る7日保持のartifactです。GitHub CLIでmainの成功runを指定して取得し、attestation検証付きinstallerへ渡します。ZIPと展開先は`data/local/`などGit管理対象外だけを使用してください。
+
+```powershell
+gh run download <mainの成功run ID> --repo undo-not/tech-discussion-map `
+  --name techmap-ocr-runtime-windows-x64 --dir data/local/ocr-artifact
+powershell -ExecutionPolicy Bypass -File scripts/install-attested-tesseract.ps1 `
+  -ArtifactZip data/local/ocr-artifact/techmap-ocr-runtime-windows-x64.zip
+native/teams-captions/build/Release/techmap-captions.exe ocr-status
+```
+
+installerはZIPを展開する前に、GitHub/Sigstore provenanceをこのrepositoryのmain branch、専用workflow、GitHub-hosted runnerへ限定して検証します。固定source commit、vcpkg baseline、model commit/hash、file allowlistも検証し、最後にoffline `setup-tesseract.ps1`を呼びます。networkを使うのは会議外のattestation検証だけで、OCR runtimeはnetworkへアクセスしません。
+
+組織で別のTesseract 5.5.3 Windows distributionが承認されている場合は、次の3ファイルのSHA-256を手元で確認し、従来のoffline setupを使用できます。
 
 - `tesseract.exe`
 - `tessdata\jpn.traineddata`
@@ -36,7 +48,7 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-tesseract.ps1 `
 native/teams-captions/build/Release/techmap-captions.exe ocr-status
 ```
 
-setup scriptはnetworkへアクセスせず、hash検証後にversion commandを実行し、検証済みdistributionを`%LOCALAPPDATA%\TechMapLive\ocr\current`へcopyします。既存installの置換は`-Replace`を明示した場合だけ行い、旧directoryは`previous-*`として残します。
+offline setup scriptはnetworkへアクセスせず、hash検証後にversion commandを実行し、検証済みdistributionを`%LOCALAPPDATA%\TechMapLive\ocr\current`へcopyします。どちらの経路も既存installの置換は`-Replace`を明示した場合だけ行い、旧directoryは`previous-*`として残します。
 
 ## OCR usage
 

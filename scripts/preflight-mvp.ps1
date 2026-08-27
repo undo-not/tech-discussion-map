@@ -19,7 +19,7 @@ function Test-PortAvailable([int]$Port) {
 }
 
 if ($ContractOnly) {
-  foreach ($scriptName in @('build-mvp.ps1', 'preflight-mvp.ps1', 'start-mvp.ps1')) {
+  foreach ($scriptName in @('build-mvp.ps1', 'build-tesseract-runtime.ps1', 'install-attested-tesseract.ps1', 'preflight-mvp.ps1', 'start-mvp.ps1')) {
     $scriptPath = Join-Path $PSScriptRoot $scriptName
     Assert-Leaf $scriptPath "MVP script"
     $tokens = $null

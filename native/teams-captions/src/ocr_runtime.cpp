@@ -658,7 +658,7 @@ TesseractResult RunTesseract(const OcrPaths& paths, std::vector<unsigned char>& 
         return TesseractResult::Unavailable;
     }
 
-    std::wstring command = L"\"" + paths.executable + L"\" stdin stdout --tessdata-dir \"" + paths.tessdata + L"\" -l jpn+eng --psm 6 -c debug_file=NUL tsv";
+    std::wstring command = L"\"" + paths.executable + L"\" stdin stdout --tessdata-dir \"" + paths.tessdata + L"\" -l jpn+eng --psm 6 -c debug_file=NUL -c tessedit_create_tsv=1";
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');
     wchar_t windowsDirectory[MAX_PATH]{};

@@ -42,7 +42,16 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 powershell -ExecutionPolicy Bypass -File scripts/build-mvp.ps1
 ```
 
-次に組織で承認されたTesseract 5.5.3 distributionを、実測SHA-256を指定して導入します。scriptはdownloadせず、検証済みfileだけを`%LOCALAPPDATA%\TechMapLive\ocr\current`へcopyします。
+次にmain branchの`Attested Tesseract runtime`成功runから7日保持のOCR artifactをGit管理対象外へ取得します。GitHub CLIへlogin済みであることが必要です。installerはZIPを展開する前に、GitHub/Sigstore provenanceをこのrepositoryのmain branch、専用workflow、GitHub-hosted runnerへ限定して検証します。
+
+```powershell
+gh run download <mainの成功run ID> --repo undo-not/tech-discussion-map `
+  --name techmap-ocr-runtime-windows-x64 --dir data/local/ocr-artifact
+powershell -ExecutionPolicy Bypass -File scripts/install-attested-tesseract.ps1 `
+  -ArtifactZip data/local/ocr-artifact/techmap-ocr-runtime-windows-x64.zip
+```
+
+組織で別distributionを承認している場合は、実測SHA-256を指定するoffline setupも利用できます。scriptはdownloadせず、検証済みfileだけを`%LOCALAPPDATA%\TechMapLive\ocr\current`へcopyします。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/setup-tesseract.ps1 `
