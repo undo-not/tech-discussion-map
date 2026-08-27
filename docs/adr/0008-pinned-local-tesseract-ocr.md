@@ -43,4 +43,3 @@ Tesseract projectはsource releaseを提供するが、このrepositoryはWindow
 - https://github.com/tesseract-ocr/tesseract/blob/main/doc/tesseract.1.asc
 - https://github.com/tesseract-ocr/tessdoc/blob/main/Command-Line-Usage.md
 - https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr
-
