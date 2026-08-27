@@ -1,0 +1,27 @@
+# Analysis contract
+
+## State and delta
+
+Analysis state uses `contractVersion: 1`, a monotonic revision, typed items, and an applied-delta log containing the delta ID, model ID, prompt hash, and schema hash. Item kinds are `topic`, `claim`, `question`, `decision`, `action`, `dependency`, and `risk`; evidence is not an item kind and is represented only by final utterance IDs. Every item has at least one resolvable evidence ID, confidence, status, provenance, and bounded links.
+
+The closed operation set is `add`, `update`, `merge`, `retract`, and `link`. Model output contains a base revision and operations but cannot mint canonical IDs or provenance. The local apply layer assigns `ai_` IDs, records `ai-suggested`, rejects stale revisions and duplicate delta IDs, and validates the complete delta before returning a new state. Invalid schema, unknown operation, unknown item, broken utterance reference, broken link, duplicate ID, or empty evidence rejects the whole delta without changing the input state.
+
+`human-confirmed` and `human-edited` items cannot be updated, retracted, linked from, or merged away by an AI operation. A merge tombstones duplicates as `superseded`, preserves their evidence union, and keeps them resolvable. A retract tombstones an item as `withdrawn`; it does not erase audit history.
+
+## Prompt and model boundary
+
+The prompt defines the outcome, constraints, success conditions, and output format once each. Transcript content is untrusted data, not an instruction. The output uses Responses `text.format` with a strict JSON Schema; every object sets `additionalProperties: false`. TypeScript validation remains authoritative because schema support does not replace length, ID, reference, provenance, atomicity, or concurrency checks.
+
+The outbound input is constructed from at most eight locally redacted final utterances and at most 40 active state projections. The combined projection is redacted again, preventing a label derived from an earlier window from bypassing current redaction. No raw audio, participant metadata, file, tool, conversation, previous response ID, background task, or telemetry field is accepted.
+
+The default analyzer is deterministic local mock. OpenAI analysis runs only when all participant consent, API-project data-control attestation, explicit external-analysis permission, and Credential Manager key status are present. Timeout, refusal, incomplete status, invalid JSON, invalid schema, stale revision, and upstream failure leave the local state unchanged. There is no automatic retry. A single local apply queue serializes live model output with local state revisions.
+
+## Native transport
+
+The browser sends a policy-validated request to the authenticated loopback companion. The native privacy helper reads `TechMapLive/OpenAIApiKey` from Windows Credential Manager and performs the HTTPS POST itself; the key does not enter the browser or Node process. The destination is compiled as `api.openai.com:443/v1/responses`, TLS certificate validation remains enabled, TLS 1.2 is required, request and response sizes are bounded, and timeouts are finite.
+
+The helper uses direct `NO_PROXY` transport. Environments that require an explicit or intercepting corporate proxy fail closed until a separately reviewed transport policy exists. This avoids silently routing confidential content through auto-discovered proxies. As documented in the privacy boundary, another process already running as the same Windows user remains outside the isolation boundary because it can invoke that user's Credential Manager context directly.
+
+## Evidence
+
+CI evaluates deterministic synthetic fixtures for duplicate merge, correction, pending question resolution, and decision change. Tests cover atomic rejection, idempotence, human-item protection, prompt/schema hashes, state-projection redaction, strict request shape, response refusal/incomplete handling, companion authentication/rate limiting, and fixed native endpoint/TLS/proxy policy. No real meeting content or API key is used in tests.

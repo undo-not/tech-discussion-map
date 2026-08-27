@@ -5,6 +5,8 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createPrivacyStore } from './privacy-store.mjs';
+import { assertPrivacySafeResponsesRequest } from '../app/adapters/privacy/openai-request-policy.ts';
+import { analysisStructuredOutput } from '../app/domain/analysis/schema.ts';
 
 const loopbackHost = '127.0.0.1';
 const defaultPort = 43117;
@@ -12,6 +14,7 @@ const maximumJsonBytes = 4 * 1024;
 const maximumAudioBytes = 128 * 1024;
 const maximumWorkerFrameBytes = 64 * 1024;
 const maximumPrivacyRequestBytes = 1024 * 1024;
+const maximumAnalysisRequestBytes = 32 * 1024;
 const allowedOrigins = new Set(['http://127.0.0.1:3000', 'http://localhost:3000']);
 const tokenLifetimeMs = 10 * 60 * 1000;
 
@@ -141,7 +144,7 @@ export function createCompanionServer(options = {}) {
       for (const [token, entry] of tokens) if (entry.expiresAt < Date.now()) tokens.delete(token);
       while (tokens.size >= 32) tokens.delete(tokens.keys().next().value);
       const token = randomBytes(32).toString('hex');
-      tokens.set(token, { origin, expiresAt: Date.now() + tokenLifetimeMs });
+      tokens.set(token, { origin, expiresAt: Date.now() + tokenLifetimeMs, analysisWindowStart: Date.now(), analysisCalls: 0 });
       return sendJson(response, 200, { token }, origin);
     }
 
@@ -150,6 +153,20 @@ export function createCompanionServer(options = {}) {
     const tokenEntry = [...tokens.entries()].find(([token]) => tokenMatches(token, actualToken));
     if (!tokenEntry || tokenEntry[1].origin !== origin || tokenEntry[1].expiresAt < Date.now()) {
       return sendJson(response, 401, { error: 'unauthorized' }, origin);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/v1/analysis') {
+      const tokenState = tokenEntry[1];
+      if (Date.now() - tokenState.analysisWindowStart >= 60_000) { tokenState.analysisWindowStart = Date.now(); tokenState.analysisCalls = 0; }
+      if (tokenState.analysisCalls >= 6) return sendJson(response, 429, { error: 'analysis-rate-limited' }, origin);
+      const body = await readBody(request, maximumAnalysisRequestBytes).catch(() => null);
+      let analysisRequest;
+      try { analysisRequest = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; assertPrivacySafeResponsesRequest(analysisRequest); }
+      catch { return sendJson(response, 400, { error: 'analysis-request-rejected' }, origin); }
+      if (JSON.stringify(analysisRequest.text?.format) !== JSON.stringify(analysisStructuredOutput)) return sendJson(response, 400, { error: 'analysis-schema-rejected' }, origin);
+      tokenState.analysisCalls += 1;
+      try { return sendJson(response, 200, await privacyStore.responses(analysisRequest), origin); }
+      catch { return sendJson(response, 502, { error: 'analysis-upstream-unavailable' }, origin); }
     }
 
     if (request.method === 'GET' && url.pathname === '/v1/privacy/status') {

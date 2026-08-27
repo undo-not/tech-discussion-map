@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { downmixAndResample48kStereoTo16kMono } from '../adapters/audio/pcm.ts';
 import { isLoopbackRuntime } from '../adapters/audio/browser-microphone.ts';
 import { companionUrl, maximumAudioChunkBytes, maximumQueuedAudioBytes } from '../adapters/transcription/local-companion-client.ts';
+import { createPrivacySafeStructuredResponsesRequest } from '../adapters/privacy/openai-request-policy.ts';
+import { analysisStructuredOutput } from '../domain/analysis/schema.ts';
+import { redactText } from '../domain/privacy/redaction.ts';
 import { transitionTranscriptionSession } from '../domain/transcription/session.ts';
 import { applyTranscriptEvent, emptyTranscriptState } from '../domain/transcription/utterance.ts';
 import { createCompanionServer, frameForWorker, parseWorkerEvents } from '../../companion/local-transcription-host.mjs';
@@ -92,7 +95,9 @@ test('companion binds as an authenticated loopback-only PCM bridge', async (cont
     kill() { this.killed = true; this.emit('exit', 0); }
   }
   const worker = new FakeWorker();
-  const server = createCompanionServer({ environment: { LOCALAPPDATA: root }, modelPath, workerPath, spawnWorker: () => worker, launchSecret });
+  let capturedAnalysisRequest;
+  const privacyStore = { responses: async (request) => { capturedAnalysisRequest = request; return { status: 'completed', output: [{ content: [{ type: 'output_text', text: '{"contractVersion":1,"baseRevision":0,"operations":[]}' }] }] }; } };
+  const server = createCompanionServer({ environment: { LOCALAPPDATA: root }, modelPath, workerPath, spawnWorker: () => worker, launchSecret, privacyStore });
   await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
   context.after(async () => {
     await new Promise((resolveClose) => server.close(resolveClose));
@@ -117,6 +122,20 @@ test('companion binds as an authenticated loopback-only PCM bridge', async (cont
   const bootstrap = await fetch(`${base}/v1/bootstrap`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:3000', 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret }) });
   const { token } = await bootstrap.json();
   const headers = { Origin: 'http://127.0.0.1:3000', Authorization: `Bearer ${token}` };
+  const redacted = redactText('合成された安全な分析window');
+  assert.equal(redacted.ok, true);
+  const analysisRequest = createPrivacySafeStructuredResponsesRequest('gpt-5-mini', redacted.text, analysisStructuredOutput);
+  const analyzed = await fetch(`${base}/v1/analysis`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(analysisRequest) });
+  assert.equal(analyzed.status, 200);
+  assert.equal(capturedAnalysisRequest.store, false);
+  const rejectedAnalysis = await fetch(`${base}/v1/analysis`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ ...analysisRequest, background: true }) });
+  assert.equal(rejectedAnalysis.status, 400);
+  for (let index = 0; index < 5; index += 1) {
+    const response = await fetch(`${base}/v1/analysis`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(analysisRequest) });
+    assert.equal(response.status, 200);
+  }
+  const rateLimited = await fetch(`${base}/v1/analysis`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(analysisRequest) });
+  assert.equal(rateLimited.status, 429);
   const started = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'local', sampleRate: 16000, channels: 1, encoding: 'pcm-s16le' }) });
   const { sessionId } = await started.json();
   let input = Buffer.alloc(0);

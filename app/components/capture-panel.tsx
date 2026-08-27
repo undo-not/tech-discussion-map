@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { LocalOpenAiAnalyzer } from '@/adapters/analysis/local-openai-analyzer.ts';
+import { analyzeWithDeterministicMock } from '@/adapters/analysis/mock-analyzer.ts';
 import { isLoopbackRuntime, listMicrophones, startMicrophoneCapture, type MicrophoneCapture, type MicrophoneDevice } from '@/adapters/audio/browser-microphone.ts';
 import { purgeLegacyPlaintextTranscripts } from '@/adapters/persistence/legacy-store-migration.ts';
 import { exportSessionToUserSelectedPath, LocalPrivacyClient, type StoredSession, type StoredSessionMetadata } from '@/adapters/privacy/local-privacy-client.ts';
@@ -8,6 +10,7 @@ import { LocalCompanionTranscriptionClient } from '@/adapters/transcription/loca
 import { createSyntheticTranscription } from '@/adapters/transcription/synthetic-transcription.ts';
 import { createConsentRecord, type ConsentRecord } from '@/domain/privacy/consent.ts';
 import { createMinimalUtteranceWindow } from '@/domain/privacy/redaction.ts';
+import { applyAnalysisDelta, emptyAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
 import { transitionTranscriptionSession, type TranscriptionSessionEvent, type TranscriptionSessionState } from '@/domain/transcription/session.ts';
 import { applyTranscriptEvent, emptyTranscriptState, type TranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
 
@@ -32,6 +35,10 @@ export function CapturePanel() {
   const [retentionDays, setRetentionDays] = useState<RetentionDays>(7);
   const [dataControlsAttested, setDataControlsAttested] = useState(false);
   const [externalAnalysisAllowed, setExternalAnalysisAllowed] = useState(false);
+  const [analysisMode, setAnalysisMode] = useState<'mock' | 'openai'>('mock');
+  const [analysisState, setAnalysisState] = useState<AnalysisState>(emptyAnalysisState);
+  const [analysisStatus, setAnalysisStatus] = useState('local mockは確定発話ごとに自動更新します。');
+  const [openAiInFlight, setOpenAiInFlight] = useState(0);
   const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'synthetic'>('none');
   const [meetingEnded, setMeetingEnded] = useState(false);
   const [privacyStatus, setPrivacyStatus] = useState<{ secureStore: boolean; credentialConfigured: boolean; location: string } | null>(null);
@@ -40,8 +47,13 @@ export function CapturePanel() {
   const microphone = useRef<MicrophoneCapture | null>(null);
   const localClient = useRef<LocalCompanionTranscriptionClient | null>(null);
   const privacyClient = useRef<LocalPrivacyClient | null>(null);
+  const openAiAnalyzer = useRef<LocalOpenAiAnalyzer | null>(null);
   const synthetic = useRef<SyntheticSession | null>(null);
   const transcriptRef = useRef<TranscriptState>(emptyTranscriptState);
+  const analysisStateRef = useRef<AnalysisState>(emptyAnalysisState);
+  const analysisModeRef = useRef<'mock' | 'openai'>('mock');
+  const analysisChain = useRef<Promise<void>>(Promise.resolve());
+  const privacyStatusRef = useRef<{ secureStore: boolean; credentialConfigured: boolean; location: string } | null>(null);
   const consentRef = useRef<ConsentRecord | null>(null);
   const consentAllowedRef = useRef(false);
   const sessionStateRef = useRef<TranscriptionSessionState>('idle');
@@ -59,6 +71,7 @@ export function CapturePanel() {
   useEffect(() => { saveLocallyRef.current = saveLocally; }, [saveLocally]);
   useEffect(() => { retentionDaysRef.current = retentionDays; }, [retentionDays]);
   useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
+  useEffect(() => { analysisModeRef.current = analysisMode; }, [analysisMode]);
   useEffect(() => { void listMicrophones().then(setDevices).catch(() => setDevices([])); }, []);
   useEffect(() => { void purgeLegacyPlaintextTranscripts().catch(() => setMessage('旧版のplaintext保存を削除できません。ほかのTechMap tabを閉じて再読み込みしてください。')); }, []);
   useEffect(() => () => { synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); }, []);
@@ -78,10 +91,12 @@ export function CapturePanel() {
       const client = await connectPrivacy();
       await client.sweep();
       const [status, sessions] = await Promise.all([client.status(), client.list()]);
+      privacyStatusRef.current = status;
       setPrivacyStatus(status);
       setStoredSessions(sessions);
       if (announce) setMessage('current-user ACLとDPAPIで保護されたローカル保存先を確認しました。');
     } catch {
+      privacyStatusRef.current = null;
       setPrivacyStatus(null);
       if (announce) setMessage('privacy helperを確認できません。保存と外部分析はfail closedで無効です。');
     }
@@ -94,7 +109,7 @@ export function CapturePanel() {
     return {
       id: sessionIdRef.current, createdAt: sessionCreatedAtRef.current, updatedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + retentionDaysRef.current * 86_400_000).toISOString(), retentionDays: retentionDaysRef.current,
-      consent, transcript: state.utterances.filter((item) => item.phase === 'final'), analysis: [],
+      consent, transcript: state.utterances.filter((item) => item.phase === 'final'), analysis: analysisStateRef.current,
       state: { capture: sessionStateRef.current, externalAnalysisAllowed: externalAnalysisAllowedRef.current, dataControlsAttested: dataControlsAttestedRef.current },
     };
   };
@@ -115,11 +130,43 @@ export function CapturePanel() {
     });
   };
 
+  const scheduleAnalysis = (transcriptState: TranscriptState, requestedMode = analysisModeRef.current) => {
+    analysisChain.current = analysisChain.current.then(async () => {
+      if (requestedMode === 'openai') {
+        if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current || !privacyStatusRef.current?.credentialConfigured) {
+          setAnalysisStatus('OpenAI分析gateが閉じているためlocal stateを変更せず、mockを利用できます。');
+          return;
+        }
+        const window = createMinimalUtteranceWindow(transcriptState.utterances);
+        if (!window.ok) { setAnalysisStatus('redaction済み最小windowを構築できず、OpenAI送信を中止しました。'); return; }
+        setOpenAiInFlight((value) => value + 1);
+        try {
+          openAiAnalyzer.current ??= new LocalOpenAiAnalyzer();
+          const delta = await openAiAnalyzer.current.analyze('gpt-5-mini', window.text, analysisStateRef.current);
+          if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current) { setAnalysisStatus('分析中に外部送信許可が解除されたため、結果を適用しませんでした。'); return; }
+          if (delta.operations.length === 0) { setAnalysisStatus('OpenAI分析: 構造上の変化はありません。'); return; }
+          const next = applyAnalysisDelta(analysisStateRef.current, delta, transcriptRef.current.utterances);
+          analysisStateRef.current = next; setAnalysisState(next); persistSnapshot(transcriptRef.current);
+          setAnalysisStatus(`OpenAI分析をrevision ${next.revision}へ原子的に適用しました。`);
+        } finally { setOpenAiInFlight((value) => Math.max(0, value - 1)); }
+        return;
+      }
+      const delta = analyzeWithDeterministicMock(transcriptState.utterances, analysisStateRef.current);
+      if (delta.operations.length === 0) { setAnalysisStatus('local mock: 構造上の変化はありません。'); return; }
+      const next = applyAnalysisDelta(analysisStateRef.current, delta, transcriptState.utterances);
+      analysisStateRef.current = next; setAnalysisState(next); persistSnapshot(transcriptState);
+      setAnalysisStatus(`local mockをrevision ${next.revision}へ更新しました。`);
+    }).catch(() => setAnalysisStatus('分析を適用できませんでした。local workspaceは変更せず、mock／手動整理を継続できます。'));
+  };
+
   const receive = (event: TranscriptUtterance) => {
     const next = applyTranscriptEvent(transcriptRef.current, event);
     transcriptRef.current = next;
     setTranscript(next);
-    if (event.phase === 'final' && event.source !== 'synthetic') persistSnapshot(next);
+    if (event.phase === 'final') {
+      if (event.source !== 'synthetic') persistSnapshot(next);
+      scheduleAnalysis(next, event.source === 'synthetic' ? 'mock' : analysisModeRef.current);
+    }
   };
 
   const startLocal = async () => {
@@ -131,11 +178,14 @@ export function CapturePanel() {
       try {
         const status = await (await connectPrivacy()).status();
         if (!status.secureStore) throw new Error('privacy-store-unverified');
+        privacyStatusRef.current = status;
         setPrivacyStatus(status);
       } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
     }
     transcriptRef.current = emptyTranscriptState;
     setTranscript(emptyTranscriptState);
+    analysisStateRef.current = emptyAnalysisState;
+    setAnalysisState(emptyAnalysisState);
     consentRef.current = createConsentRecord();
     consentAllowedRef.current = true;
     sessionWriteBlockedRef.current = false;
@@ -179,6 +229,7 @@ export function CapturePanel() {
 
   const startDemo = () => {
     setMeetingEnded(false);
+    analysisModeRef.current = 'mock'; setAnalysisMode('mock');
     synthetic.current?.stop(); synthetic.current = createSyntheticTranscription(receive); synthetic.current.start();
     setInputMode('synthetic');
     dispatch({ type: 'demo-started' });
@@ -210,6 +261,7 @@ export function CapturePanel() {
       catch { localDeleteVerified = false; }
     }
     transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
+    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
     setMeetingEnded(false);
     if (localDeleteVerified) {
       persistedSessionRef.current = false;
@@ -232,6 +284,8 @@ export function CapturePanel() {
     if (!confirmed) {
       externalAnalysisAllowedRef.current = false;
       setExternalAnalysisAllowed(false);
+      analysisModeRef.current = 'mock';
+      setAnalysisMode('mock');
     }
     if (!confirmed && sessionState !== 'idle' && sessionState !== 'stopped') {
       consentRef.current = null;
@@ -252,6 +306,7 @@ export function CapturePanel() {
       let state = emptyTranscriptState;
       for (const utterance of value.transcript) state = applyTranscriptEvent(state, utterance);
       transcriptRef.current = state; setTranscript(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
+      analysisStateRef.current = value.analysis; setAnalysisState(value.analysis);
       persistedSessionRef.current = true;
       persistenceMayExistRef.current = true;
       sessionWriteBlockedRef.current = false;
@@ -275,9 +330,9 @@ export function CapturePanel() {
     <section aria-label="音声入力" className="border-b border-[#d9ded8] bg-[#eef3ef] px-4 py-3 md:px-6">
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-2 pb-2 text-xs">
         <span className={`rounded-full px-3 py-1 font-bold ${inputMode === 'microphone' ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {inputMode === 'microphone' ? 'ON' : 'OFF'}</span>
-        <span className="rounded-full bg-white px-3 py-1 font-bold text-[#52615c]">OPENAI送信 OFF</span>
+        <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
-        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON（#3接続待ち）' : 'OFF'}</span>
+        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
       </div>
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="min-w-0">
@@ -294,6 +349,17 @@ export function CapturePanel() {
           {!active && <button onClick={startDemo} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}
         </div>
       </div>
+      <div className="mx-auto mt-2 grid max-w-[1600px] gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs lg:grid-cols-[auto_1fr]">
+        <div className="flex flex-wrap items-center gap-2">
+          <label>分析mode <select value={analysisMode} onChange={(event) => { const mode = event.target.value as 'mock' | 'openai'; analysisModeRef.current = mode; setAnalysisMode(mode); }} className="ml-1 rounded border px-2 py-1"><option value="mock">local deterministic mock</option><option value="openai" disabled={!externalAnalysisAllowed || !dataControlsAttested || !privacyStatus?.credentialConfigured}>OpenAI gpt-5-mini</option></select></label>
+          <button disabled={!transcript.utterances.some((item) => item.phase === 'final')} onClick={() => scheduleAnalysis(transcriptRef.current, analysisMode)} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">分析を更新</button>
+          <span>{analysisStatus}</span>
+        </div>
+        <div aria-live="polite" className="flex min-w-0 flex-wrap gap-2">
+          {analysisState.items.filter((item) => item.status !== 'withdrawn').slice(-4).map((item) => <span key={item.id} className="rounded border border-[#d6ded8] bg-white px-2 py-1"><b>{item.kind} · {item.provenance === 'ai-suggested' ? 'AI提案' : '人が確認'}</b> · {item.title} <small>{item.status} · 確信度 {Math.round(item.confidence * 100)}% · 根拠 {item.evidenceUtteranceIds.join(', ')}</small></span>)}
+          {analysisState.items.length === 0 && <span className="text-[#65736e]">分析itemはまだありません。</span>}
+        </div>
+      </div>
       <details open={!consentConfirmed || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
         <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
@@ -306,8 +372,8 @@ export function CapturePanel() {
             <span>{privacyStatus ? `ACL/DPAPI: 有効 · Credential Manager key: ${privacyStatus.credentialConfigured ? '設定済み' : '未設定'}` : '未確認'}</span>
           </div>
           <div className="space-y-2">
-            <label className="flex items-start gap-2"><input type="checkbox" checked={dataControlsAttested} onChange={(event) => { const checked = event.target.checked; dataControlsAttestedRef.current = checked; setDataControlsAttested(checked); if (!checked) { externalAnalysisAllowedRef.current = false; setExternalAnalysisAllowed(false); } }} />利用するOpenAI API projectのData controlsと保持条件を確認しました</label>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={externalAnalysisAllowed} disabled={!consentConfirmed || !dataControlsAttested || !privacyStatus?.credentialConfigured} onChange={(event) => { externalAnalysisAllowedRef.current = event.target.checked; setExternalAnalysisAllowed(event.target.checked); }} />redaction後の最小textをOpenAI分析へ送ることを許可</label>
+            <label className="flex items-start gap-2"><input type="checkbox" checked={dataControlsAttested} onChange={(event) => { const checked = event.target.checked; dataControlsAttestedRef.current = checked; setDataControlsAttested(checked); if (!checked) { externalAnalysisAllowedRef.current = false; setExternalAnalysisAllowed(false); analysisModeRef.current = 'mock'; setAnalysisMode('mock'); } }} />利用するOpenAI API projectのData controlsと保持条件を確認しました</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={externalAnalysisAllowed} disabled={!consentConfirmed || !dataControlsAttested || !privacyStatus?.credentialConfigured} onChange={(event) => { const checked = event.target.checked; externalAnalysisAllowedRef.current = checked; setExternalAnalysisAllowed(checked); if (!checked) { analysisModeRef.current = 'mock'; setAnalysisMode('mock'); } }} />redaction後の最小textをOpenAI分析へ送ることを許可</label>
             <p className="font-semibold">`store:false`でも、既定ではabuse monitoring logにcustomer contentが最大30日保持され得ます。ZDR/MAMは対象projectで承認・設定された場合だけ有効で、本アプリは保証済みと推測しません。</p>
             <p>送信対象: 最大8件の確定発話、ID/source/time、redaction後text。送信しないもの: 生音声、participant metadata、file、conversation、background task、tool、analytics。text内の固有名詞はheuristic redactionで完全除去を保証しません。</p>
             <p>Redaction preview: {preview.ok ? preview.text : '確定発話がないか、検証に失敗したため送信不能'}</p>
@@ -318,7 +384,7 @@ export function CapturePanel() {
             {storedSessions.length > 0 && <div><b>保存session:</b> {storedSessions.slice(0, 5).map((item) => item.unreadable
               ? <button key={item.id} onClick={() => void deleteStoredSession(item.id)} className="ml-2 rounded border border-[#c8a7a0] px-2 py-1 text-[#8b3f34]">復号不能sessionを削除</button>
               : <button key={item.id} onClick={() => void loadSession(item.id)} className="ml-2 rounded border px-2 py-1">{new Date(item.updatedAt as string).toLocaleString()} · 発話{item.transcriptCount}件を再開</button>)}</div>}
-            <p>削除はlocal encrypted session全体が対象です。明示exportは別copyなので個別削除が必要です。OpenAI送信後の保持はlocal削除では取り消せません（現在のadapterでは送信OFF）。</p>
+            <p>削除はlocal encrypted session全体が対象です。明示exportは別copyなので個別削除が必要です。OpenAI送信後の保持はlocal削除では取り消せません。外部model停止・refusal・不正schema時はdeltaを適用せずlocal workspaceを維持します。</p>
           </div>
         </div>
       </details>

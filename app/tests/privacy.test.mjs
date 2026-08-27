@@ -8,6 +8,7 @@ import { assertAllowedRuntimeEgress, assertPrivacySafeResponsesRequest, createPr
 import { createConsentRecord, isConsentRecord } from '../domain/privacy/consent.ts';
 import { createMinimalUtteranceWindow, redactText } from '../domain/privacy/redaction.ts';
 import { createPrivacyStore, validateStoredSession } from '../../companion/privacy-store.mjs';
+import { emptyAnalysisState } from '../domain/analysis/contract.ts';
 
 const appRoot = new URL('../', import.meta.url);
 
@@ -97,7 +98,7 @@ test('privacy store writes only sealed session data and supports retention/delet
   const session = {
     id: '11111111-1111-4111-8111-111111111111', createdAt: now.toISOString(), updatedAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), retentionDays: 1, consent: createConsentRecord(now),
-    transcript: [syntheticUtterance('synthetic-1', '公開用の合成発話')], analysis: [], state: { capture: 'stopped' },
+    transcript: [syntheticUtterance('synthetic-1', '公開用の合成発話')], analysis: emptyAnalysisState, state: { capture: 'stopped' },
   };
   await store.save(session);
   const ciphertext = await readFile(join(root, `${session.id}.tmps`));
@@ -111,7 +112,32 @@ test('privacy store writes only sealed session data and supports retention/delet
   assert.equal(await store.remove(session.id), false);
   assert.equal(await store.remove(corruptId), true);
   assert.throws(() => validateStoredSession({ ...session, audio: 'forbidden' }), /invalid-session/);
-  assert.throws(() => validateStoredSession({ ...session, analysis: [{ payload: { samples: [1, 2, 3] } }] }), /forbidden-session-data/);
+  assert.throws(() => validateStoredSession({ ...session, analysis: { ...emptyAnalysisState, samples: [1, 2, 3] } }), /invalid-session-analysis/);
   assert.throws(() => validateStoredSession({ ...session, consent: { ...session.consent, operator: 'extra' } }), /invalid-session-consent/);
+  await rm(localAppData, { recursive: true, force: true });
+});
+
+test('native Responses transport is fixed, direct, bounded, and keeps credential output private', async () => {
+  const source = await readFile(new URL('../../native/privacy/src/main.cpp', import.meta.url), 'utf8');
+  assert.match(source, /CredReadW\(CredentialTarget\.data\(\)/);
+  assert.match(source, /WINHTTP_ACCESS_TYPE_NO_PROXY/);
+  assert.match(source, /WinHttpConnect\(session\.get\(\), L"api\.openai\.com"/);
+  assert.match(source, /WinHttpOpenRequest\(connection\.get\(\), L"POST", L"\/v1\/responses"/);
+  assert.match(source, /WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2/);
+  assert.doesNotMatch(source, /WINHTTP_ACCESS_TYPE_(?:DEFAULT_PROXY|AUTOMATIC_PROXY)/);
+  assert.doesNotMatch(source, /WINHTTP_OPTION_SECURITY_FLAGS/);
+  assert.doesNotMatch(source, /WriteAll\(key\.data|WriteAll\(authorization\.data/);
+});
+
+test('companion transport zeroes the serialized request buffer after native handoff', async () => {
+  const localAppData = await mkdtemp(join(tmpdir(), 'techmap-responses-'));
+  let handedOff;
+  const store = createPrivacyStore({ environment: { LOCALAPPDATA: localAppData }, runner: async (command, input) => {
+    assert.equal(command, 'responses');
+    handedOff = input;
+    return Buffer.from('{"status":"completed","output":[]}');
+  } });
+  assert.equal((await store.responses({ model: 'synthetic', store: false })).status, 'completed');
+  assert.ok(handedOff.every((value) => value === 0));
   await rm(localAppData, { recursive: true, force: true });
 });

@@ -10,7 +10,7 @@ add_executable(techmap-privacy src/main.cpp)
 target_compile_features(techmap-privacy PRIVATE cxx_std_20)
 target_compile_definitions(techmap-privacy PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(techmap-privacy PRIVATE /W4 /WX /permissive- /sdl)
-target_link_libraries(techmap-privacy PRIVATE Advapi32 Crypt32 Ole32 Shell32)
+target_link_libraries(techmap-privacy PRIVATE Advapi32 Crypt32 Ole32 Shell32 Winhttp)
 
 enable_testing()
 add_test(NAME privacy-self-test COMMAND techmap-privacy self-test)
