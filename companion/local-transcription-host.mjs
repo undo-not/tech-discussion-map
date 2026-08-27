@@ -114,6 +114,7 @@ export function createCompanionServer(options = {}) {
   if (!/^[a-f0-9]{64}$/.test(launchSecret)) throw new Error('invalid-launch-secret');
   const tokens = new Map();
   const sessions = new Map();
+  const globalAnalysisBudget = { windowStart: Date.now(), calls: 0 };
 
   if (!pathIsWithin(defaults.modelRoot, modelPath)) throw new Error('Model must remain under LocalAppData\\TechMapLive\\models');
 
@@ -158,13 +159,15 @@ export function createCompanionServer(options = {}) {
     if (request.method === 'POST' && url.pathname === '/v1/analysis') {
       const tokenState = tokenEntry[1];
       if (Date.now() - tokenState.analysisWindowStart >= 60_000) { tokenState.analysisWindowStart = Date.now(); tokenState.analysisCalls = 0; }
-      if (tokenState.analysisCalls >= 6) return sendJson(response, 429, { error: 'analysis-rate-limited' }, origin);
+      if (Date.now() - globalAnalysisBudget.windowStart >= 60_000) { globalAnalysisBudget.windowStart = Date.now(); globalAnalysisBudget.calls = 0; }
+      if (tokenState.analysisCalls >= 6 || globalAnalysisBudget.calls >= 12) return sendJson(response, 429, { error: 'analysis-rate-limited' }, origin);
       const body = await readBody(request, maximumAnalysisRequestBytes).catch(() => null);
       let analysisRequest;
       try { analysisRequest = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; assertPrivacySafeResponsesRequest(analysisRequest); }
       catch { return sendJson(response, 400, { error: 'analysis-request-rejected' }, origin); }
       if (JSON.stringify(analysisRequest.text?.format) !== JSON.stringify(analysisStructuredOutput)) return sendJson(response, 400, { error: 'analysis-schema-rejected' }, origin);
       tokenState.analysisCalls += 1;
+      globalAnalysisBudget.calls += 1;
       try { return sendJson(response, 200, await privacyStore.responses(analysisRequest), origin); }
       catch { return sendJson(response, 502, { error: 'analysis-upstream-unavailable' }, origin); }
     }

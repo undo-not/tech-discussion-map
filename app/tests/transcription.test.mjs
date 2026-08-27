@@ -136,6 +136,16 @@ test('companion binds as an authenticated loopback-only PCM bridge', async (cont
   }
   const rateLimited = await fetch(`${base}/v1/analysis`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(analysisRequest) });
   assert.equal(rateLimited.status, 429);
+  const secondBootstrap = await fetch(`${base}/v1/bootstrap`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:3000', 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret }) });
+  const secondHeaders = { Origin: 'http://127.0.0.1:3000', Authorization: `Bearer ${(await secondBootstrap.json()).token}` };
+  for (let index = 0; index < 6; index += 1) {
+    const response = await fetch(`${base}/v1/analysis`, { method: 'POST', headers: { ...secondHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(analysisRequest) });
+    assert.equal(response.status, 200);
+  }
+  const thirdBootstrap = await fetch(`${base}/v1/bootstrap`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:3000', 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret }) });
+  const thirdHeaders = { Origin: 'http://127.0.0.1:3000', Authorization: `Bearer ${(await thirdBootstrap.json()).token}` };
+  const globallyRateLimited = await fetch(`${base}/v1/analysis`, { method: 'POST', headers: { ...thirdHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(analysisRequest) });
+  assert.equal(globallyRateLimited.status, 429);
   const started = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'local', sampleRate: 16000, channels: 1, encoding: 'pcm-s16le' }) });
   const { sessionId } = await started.json();
   let input = Buffer.alloc(0);

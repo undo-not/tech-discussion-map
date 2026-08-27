@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateAnalysisState } from '../app/domain/analysis/contract.ts';
+import { emptyAnalysisState, validateAnalysisState } from '../app/domain/analysis/contract.ts';
 
 const maximumSessionPlaintextBytes = 1024 * 1024;
 const maximumSessionCiphertextBytes = 8 * 1024 * 1024;
@@ -38,7 +38,10 @@ export function validateStoredSession(value) {
   const utteranceKeys = new Set(['id', 'revision', 'phase', 'source', 'speaker', 'startMs', 'endMs', 'text']);
   if (!Array.isArray(value.transcript) || value.transcript.length > 10_000 || value.transcript.some((item) => typeof item !== 'object' || item === null || !exactKeys(item, utteranceKeys) || !/^[a-zA-Z0-9_-]{1,80}$/.test(item.id) || !Number.isSafeInteger(item.revision) || item.revision < 0 || item.phase !== 'final' || !['local', 'remote', 'synthetic'].includes(item.source) || !['self', 'remote-group', 'unknown'].includes(item.speaker) || !Number.isSafeInteger(item.startMs) || item.startMs < 0 || !Number.isSafeInteger(item.endMs) || item.endMs < item.startMs || typeof item.text !== 'string' || item.text.length === 0 || item.text.length > 8_000)) throw new Error('invalid-session-transcript');
   let analysis;
-  try { analysis = validateAnalysisState(value.analysis, value.transcript); }
+  try {
+    const candidate = Array.isArray(value.analysis) && value.analysis.length === 0 ? emptyAnalysisState : value.analysis;
+    analysis = validateAnalysisState(candidate, value.transcript);
+  }
   catch { throw new Error('invalid-session-analysis'); }
   if (typeof value.state !== 'object' || value.state === null || !exactKeys(value.state, new Set(['capture', 'externalAnalysisAllowed', 'dataControlsAttested'])) || typeof value.state.capture !== 'string' || ('externalAnalysisAllowed' in value.state && typeof value.state.externalAnalysisAllowed !== 'boolean') || ('dataControlsAttested' in value.state && typeof value.state.dataControlsAttested !== 'boolean')) throw new Error('invalid-session-state');
   const serialized = JSON.stringify(value);
@@ -51,14 +54,28 @@ function runNativeHelper(helperPath, command, input = Buffer.alloc(0)) {
     const child = spawn(helperPath, [command], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     const chunks = [];
     let size = 0;
+    let settled = false;
+    let oversized = false;
+    const timeoutMilliseconds = command === 'responses' ? 55_000 : 10_000;
+    const finish = (error, output) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error); else resolveRun(output);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish(new Error(`privacy-helper-${command}-timeout`));
+    }, timeoutMilliseconds);
+    timeout.unref();
     child.stdout.on('data', (chunk) => {
       size += chunk.length;
       const maximumOutputBytes = command === 'responses' ? maximumResponsesResponseBytes : maximumSessionCiphertextBytes;
-      if (size > maximumOutputBytes) child.kill();
+      if (size > maximumOutputBytes) { oversized = true; child.kill(); }
       else chunks.push(chunk);
     });
-    child.on('error', () => reject(new Error('privacy-helper-unavailable')));
-    child.on('exit', (code) => code === 0 && size <= (command === 'responses' ? maximumResponsesResponseBytes : maximumSessionCiphertextBytes) ? resolveRun(Buffer.concat(chunks)) : reject(new Error(`privacy-helper-${command}-failed`)));
+    child.on('error', () => finish(new Error('privacy-helper-unavailable')));
+    child.on('exit', (code) => code === 0 && !oversized ? finish(null, Buffer.concat(chunks)) : finish(new Error(`privacy-helper-${command}-failed`)));
     child.stdin.end(input);
   });
 }

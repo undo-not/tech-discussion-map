@@ -34,33 +34,53 @@ function extractOutputText(value: unknown): string {
 
 export class LocalOpenAiAnalyzer {
   #token = '';
+  readonly #fetch: typeof fetch;
+  readonly #launchSecret: () => string;
+
+  constructor(options: { fetchImpl?: typeof fetch; launchSecret?: () => string } = {}) {
+    this.#fetch = options.fetchImpl ?? fetch;
+    this.#launchSecret = options.launchSecret ?? (() => consumeLocalLaunchSecret());
+  }
 
   async analyze(model: string, redactedWindow: RedactedText, state: AnalysisState): Promise<AnalysisDelta> {
     if (!this.#token) await this.#connect();
     const redactedInput = createRedactedAnalysisInput(redactedWindow, state);
     const request = createPrivacySafeStructuredResponsesRequest(model, redactedInput, analysisStructuredOutput);
+    let response = await this.#postAnalysis(request);
+    if (response.status === 401) {
+      this.#token = '';
+      await this.#connect();
+      response = await this.#postAnalysis(request);
+    }
+    if (!response.ok) throw new Error(`analysis-companion-${response.status}`);
+    const output = parseAnalyzerOutput(JSON.parse(extractOutputText(await response.json())));
+    return { ...output, deltaId: crypto.randomUUID(), model, promptHash: analysisPromptHash, schemaHash: analysisSchemaHash };
+  }
+
+  async #postAnalysis(request: ReturnType<typeof createPrivacySafeStructuredResponsesRequest>): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
     try {
-      const response = await fetch(companionUrl('/v1/analysis'), {
+      return await this.#fetch(companionUrl('/v1/analysis'), {
         method: 'POST', credentials: 'omit', cache: 'no-store', signal: controller.signal,
         headers: { Authorization: `Bearer ${this.#token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(request),
       });
-      if (!response.ok) throw new Error(`analysis-companion-${response.status}`);
-      const output = parseAnalyzerOutput(JSON.parse(extractOutputText(await response.json())));
-      return { ...output, deltaId: crypto.randomUUID(), model, promptHash: analysisPromptHash, schemaHash: analysisSchemaHash };
     } finally { clearTimeout(timeout); }
   }
 
   async #connect(): Promise<void> {
-    const response = await fetch(companionUrl('/v1/bootstrap'), {
-      method: 'POST', credentials: 'omit', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ launchSecret: consumeLocalLaunchSecret() }),
-    });
-    if (!response.ok) throw new Error(`analysis-bootstrap-${response.status}`);
-    const value = await response.json() as { token?: unknown };
-    if (typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new Error('analysis-invalid-bootstrap');
-    this.#token = value.token;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
+    try {
+      const response = await this.#fetch(companionUrl('/v1/bootstrap'), {
+        method: 'POST', credentials: 'omit', cache: 'no-store', signal: controller.signal, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launchSecret: this.#launchSecret() }),
+      });
+      if (!response.ok) throw new Error(`analysis-bootstrap-${response.status}`);
+      const value = await response.json() as { token?: unknown };
+      if (typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new Error('analysis-invalid-bootstrap');
+      this.#token = value.token;
+    } finally { clearTimeout(timeout); }
   }
 }
 

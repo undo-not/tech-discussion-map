@@ -112,6 +112,8 @@ test('privacy store writes only sealed session data and supports retention/delet
   assert.equal(await store.remove(session.id), false);
   assert.equal(await store.remove(corruptId), true);
   assert.throws(() => validateStoredSession({ ...session, audio: 'forbidden' }), /invalid-session/);
+  assert.deepEqual(validateStoredSession({ ...session, analysis: [] }).analysis, emptyAnalysisState);
+  assert.throws(() => validateStoredSession({ ...session, analysis: [{ legacy: true }] }), /invalid-session-analysis/);
   assert.throws(() => validateStoredSession({ ...session, analysis: { ...emptyAnalysisState, samples: [1, 2, 3] } }), /invalid-session-analysis/);
   assert.throws(() => validateStoredSession({ ...session, consent: { ...session.consent, operator: 'extra' } }), /invalid-session-consent/);
   await rm(localAppData, { recursive: true, force: true });

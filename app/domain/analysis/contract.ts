@@ -5,6 +5,10 @@ export const analysisKinds = ['topic', 'claim', 'question', 'decision', 'action'
 export const analysisStatuses = ['proposed', 'open', 'confirmed', 'blocked', 'done', 'superseded', 'withdrawn'] as const;
 export const analysisRelations = ['supports', 'contradicts', 'depends-on', 'answers', 'duplicate-of'] as const;
 export const analysisProvenance = ['ai-suggested', 'human-confirmed', 'human-edited'] as const;
+export const maximumAnalysisItems = 2_000;
+export const maximumEvidenceIds = 16;
+export const maximumItemLinks = 40;
+export const maximumAppliedDeltaLog = 512;
 
 export type AnalysisKind = (typeof analysisKinds)[number];
 export type AnalysisStatus = (typeof analysisStatuses)[number];
@@ -39,12 +43,13 @@ export type AnalysisState = { contractVersion: 1; revision: number; items: Analy
 export const emptyAnalysisState: AnalysisState = { contractVersion: 1, revision: 0, items: [], appliedDeltas: [] };
 
 const safeId = /^[a-zA-Z0-9_-]{1,80}$/;
+const safeTempId = /^[a-zA-Z0-9_-]{1,52}$/;
 const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 const boundedText = (value: unknown, maximum: number) => typeof value === 'string' && value.trim().length > 0 && value.length <= maximum && !value.includes('\0');
 const boundedConfidence = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 
 function parseEvidence(value: unknown, allowEmpty = false): string[] {
-  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.length > 16 || value.some((id) => typeof id !== 'string' || !safeId.test(id))) throw new Error('analysis-invalid-evidence');
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.length > maximumEvidenceIds || value.some((id) => typeof id !== 'string' || !safeId.test(id))) throw new Error('analysis-invalid-evidence');
   if (new Set(value).size !== value.length) throw new Error('analysis-duplicate-evidence');
   return [...value];
 }
@@ -53,7 +58,7 @@ function parseOperation(value: unknown): AnalysisOperation {
   if (typeof value !== 'object' || value === null) throw new Error('analysis-invalid-operation');
   const item = value as Record<string, unknown>;
   if (item.op === 'add') {
-    if (!exactKeys(item, ['op', 'tempId', 'kind', 'title', 'detail', 'status', 'confidence', 'evidenceUtteranceIds']) || typeof item.tempId !== 'string' || !safeId.test(item.tempId) || !analysisKinds.includes(item.kind as AnalysisKind) || !boundedText(item.title, 160) || !boundedText(item.detail, 600) || !analysisStatuses.includes(item.status as AnalysisStatus) || !boundedConfidence(item.confidence)) throw new Error('analysis-invalid-add');
+    if (!exactKeys(item, ['op', 'tempId', 'kind', 'title', 'detail', 'status', 'confidence', 'evidenceUtteranceIds']) || typeof item.tempId !== 'string' || !safeTempId.test(item.tempId) || !analysisKinds.includes(item.kind as AnalysisKind) || !boundedText(item.title, 160) || !boundedText(item.detail, 600) || !['proposed', 'open', 'blocked'].includes(item.status as string) || !boundedConfidence(item.confidence)) throw new Error('analysis-invalid-add');
     return { ...item, evidenceUtteranceIds: parseEvidence(item.evidenceUtteranceIds) } as AddOperation;
   }
   if (item.op === 'update') {
@@ -102,17 +107,18 @@ function canonicalId(deltaId: string, tempId: string): string {
 export function validateAnalysisState(value: unknown, utterances: TranscriptUtterance[] = []): AnalysisState {
   if (typeof value !== 'object' || value === null) throw new Error('analysis-invalid-state');
   const state = value as Record<string, unknown>;
-  if (!exactKeys(state, ['contractVersion', 'revision', 'items', 'appliedDeltas']) || state.contractVersion !== analysisContractVersion || !Number.isSafeInteger(state.revision) || (state.revision as number) < 0 || !Array.isArray(state.items) || state.items.length > 2_000 || !Array.isArray(state.appliedDeltas) || state.appliedDeltas.length > 2_000) throw new Error('analysis-invalid-state');
+  if (!exactKeys(state, ['contractVersion', 'revision', 'items', 'appliedDeltas']) || state.contractVersion !== analysisContractVersion || !Number.isSafeInteger(state.revision) || (state.revision as number) < 0 || !Array.isArray(state.items) || state.items.length > maximumAnalysisItems || !Array.isArray(state.appliedDeltas) || state.appliedDeltas.length > maximumAppliedDeltaLog) throw new Error('analysis-invalid-state');
   const items = state.items.map((valueItem) => {
     if (typeof valueItem !== 'object' || valueItem === null) throw new Error('analysis-invalid-item');
     const item = valueItem as Record<string, unknown>;
-    if (!exactKeys(item, ['id', 'kind', 'title', 'detail', 'status', 'confidence', 'provenance', 'evidenceUtteranceIds', 'links']) || typeof item.id !== 'string' || !safeId.test(item.id) || !analysisKinds.includes(item.kind as AnalysisKind) || !boundedText(item.title, 160) || !boundedText(item.detail, 600) || !analysisStatuses.includes(item.status as AnalysisStatus) || !boundedConfidence(item.confidence) || !analysisProvenance.includes(item.provenance as AnalysisProvenance) || !Array.isArray(item.links) || item.links.length > 40) throw new Error('analysis-invalid-item');
+    if (!exactKeys(item, ['id', 'kind', 'title', 'detail', 'status', 'confidence', 'provenance', 'evidenceUtteranceIds', 'links']) || typeof item.id !== 'string' || !safeId.test(item.id) || !analysisKinds.includes(item.kind as AnalysisKind) || !boundedText(item.title, 160) || !boundedText(item.detail, 600) || !analysisStatuses.includes(item.status as AnalysisStatus) || !boundedConfidence(item.confidence) || !analysisProvenance.includes(item.provenance as AnalysisProvenance) || !Array.isArray(item.links) || item.links.length > maximumItemLinks) throw new Error('analysis-invalid-item');
     const links = item.links.map((valueLink) => {
       if (typeof valueLink !== 'object' || valueLink === null) throw new Error('analysis-invalid-link');
       const link = valueLink as Record<string, unknown>;
       if (!exactKeys(link, ['targetId', 'relation']) || typeof link.targetId !== 'string' || !safeId.test(link.targetId) || !analysisRelations.includes(link.relation as AnalysisRelation)) throw new Error('analysis-invalid-link');
       return { targetId: link.targetId, relation: link.relation as AnalysisRelation };
     });
+    if (new Set(links.map((link) => `${link.targetId}:${link.relation}`)).size !== links.length) throw new Error('analysis-duplicate-link');
     if (item.provenance === 'ai-suggested' && item.kind === 'decision' && ['confirmed', 'done'].includes(item.status as string)) throw new Error('analysis-ai-cannot-finalize-decision');
     return { id: item.id, kind: item.kind as AnalysisKind, title: (item.title as string).trim(), detail: (item.detail as string).trim(), status: item.status as AnalysisStatus, confidence: item.confidence as number, provenance: item.provenance as AnalysisProvenance, evidenceUtteranceIds: parseEvidence(item.evidenceUtteranceIds), links };
   });
@@ -120,8 +126,11 @@ export function validateAnalysisState(value: unknown, utterances: TranscriptUtte
   const itemIds = new Set(items.map((item) => item.id));
   const utteranceIds = new Set(utterances.filter((item) => item.phase === 'final').map((item) => item.id));
   for (const item of items) {
-    if (utteranceIds.size > 0) verifyEvidence(item.evidenceUtteranceIds, utteranceIds);
-    for (const link of item.links) if (!itemIds.has(link.targetId)) throw new Error('analysis-broken-link');
+    verifyEvidence(item.evidenceUtteranceIds, utteranceIds);
+    for (const link of item.links) {
+      if (link.targetId === item.id) throw new Error('analysis-self-link');
+      if (!itemIds.has(link.targetId)) throw new Error('analysis-broken-link');
+    }
   }
   const appliedDeltas = state.appliedDeltas.map((valueDelta) => {
     if (typeof valueDelta !== 'object' || valueDelta === null) throw new Error('analysis-invalid-applied-delta');
@@ -129,7 +138,7 @@ export function validateAnalysisState(value: unknown, utterances: TranscriptUtte
     if (!exactKeys(delta, ['deltaId', 'model', 'promptHash', 'schemaHash']) || typeof delta.deltaId !== 'string' || !safeId.test(delta.deltaId) || !boundedText(delta.model, 80) || typeof delta.promptHash !== 'string' || !/^[a-f0-9]{64}$/.test(delta.promptHash) || typeof delta.schemaHash !== 'string' || !/^[a-f0-9]{64}$/.test(delta.schemaHash)) throw new Error('analysis-invalid-applied-delta');
     return delta as AppliedDelta;
   });
-  if (new Set(appliedDeltas.map((item) => item.deltaId)).size !== appliedDeltas.length || (state.revision as number) !== appliedDeltas.length) throw new Error('analysis-invalid-revision-log');
+  if (new Set(appliedDeltas.map((item) => item.deltaId)).size !== appliedDeltas.length || (state.revision as number) < appliedDeltas.length) throw new Error('analysis-invalid-revision-log');
   return { contractVersion: analysisContractVersion, revision: state.revision as number, items, appliedDeltas };
 }
 
@@ -147,7 +156,7 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
   for (const operation of parsed.operations) {
     if (operation.op === 'add') {
       verifyEvidence(operation.evidenceUtteranceIds, utteranceIds);
-      if (!['proposed', 'open', 'blocked'].includes(operation.status)) throw new Error('analysis-ai-cannot-finalize-item');
+      if (next.items.length >= maximumAnalysisItems) throw new Error('analysis-item-limit');
       const id = canonicalId(candidate.deltaId, operation.tempId);
       if (itemById().has(id)) throw new Error('analysis-duplicate-item-id');
       next.items.push({ id, kind: operation.kind, title: operation.title.trim(), detail: operation.detail.trim(), status: operation.status, confidence: operation.confidence, provenance: 'ai-suggested', evidenceUtteranceIds: [...operation.evidenceUtteranceIds], links: [] });
@@ -162,7 +171,7 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
       const evidence = new Set(target.evidenceUtteranceIds);
       for (const id of operation.removeEvidenceUtteranceIds) { if (!evidence.delete(id)) throw new Error('analysis-remove-missing-evidence'); }
       for (const id of operation.addEvidenceUtteranceIds) evidence.add(id);
-      if (evidence.size === 0) throw new Error('analysis-empty-evidence');
+      if (evidence.size === 0 || evidence.size > maximumEvidenceIds) throw new Error('analysis-evidence-limit');
       if (operation.title !== null) target.title = operation.title.trim();
       if (operation.detail !== null) target.detail = operation.detail.trim();
       if (operation.status !== null) target.status = operation.status;
@@ -183,9 +192,11 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
         if (!duplicate) throw new Error('analysis-unknown-duplicate');
         assertAiMutable(duplicate);
         duplicate.status = 'superseded';
-        duplicate.links = [...duplicate.links, { targetId: canonical.id, relation: 'duplicate-of' }];
+        if (!duplicate.links.some((link) => link.targetId === canonical.id && link.relation === 'duplicate-of')) duplicate.links.push({ targetId: canonical.id, relation: 'duplicate-of' });
+        if (duplicate.links.length > maximumItemLinks) throw new Error('analysis-link-limit');
         for (const utteranceId of duplicate.evidenceUtteranceIds) evidence.add(utteranceId);
       }
+      if (evidence.size > maximumEvidenceIds) throw new Error('analysis-evidence-limit');
       if (operation.title !== null) canonical.title = operation.title.trim();
       if (operation.detail !== null) canonical.detail = operation.detail.trim();
       canonical.evidenceUtteranceIds = [...evidence];
@@ -199,6 +210,7 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
       target.status = 'withdrawn';
       target.detail = `${target.detail}\n撤回理由: ${operation.reason.trim()}`.slice(0, 600);
       target.evidenceUtteranceIds = [...new Set([...target.evidenceUtteranceIds, ...operation.evidenceUtteranceIds])];
+      if (target.evidenceUtteranceIds.length > maximumEvidenceIds) throw new Error('analysis-evidence-limit');
       continue;
     }
     const from = items.get(operation.fromItemId);
@@ -207,7 +219,9 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
     assertAiMutable(from);
     verifyEvidence(operation.evidenceUtteranceIds, utteranceIds);
     if (!from.links.some((link) => link.targetId === to.id && link.relation === operation.relation)) from.links.push({ targetId: to.id, relation: operation.relation });
+    if (from.links.length > maximumItemLinks) throw new Error('analysis-link-limit');
     from.evidenceUtteranceIds = [...new Set([...from.evidenceUtteranceIds, ...operation.evidenceUtteranceIds])];
+    if (from.evidenceUtteranceIds.length > maximumEvidenceIds) throw new Error('analysis-evidence-limit');
   }
 
   for (const item of next.items) {
@@ -217,5 +231,6 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
   }
   next.revision += 1;
   next.appliedDeltas.push({ deltaId: candidate.deltaId, model: candidate.model, promptHash: candidate.promptHash, schemaHash: candidate.schemaHash });
-  return next;
+  next.appliedDeltas = next.appliedDeltas.slice(-maximumAppliedDeltaLog);
+  return validateAnalysisState(next, utterances);
 }
