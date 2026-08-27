@@ -65,6 +65,8 @@ export function CapturePanel() {
       let ready = false;
       const client = new LocalCompanionTranscriptionClient('local', receive);
       client.onFailure = () => {
+        void microphone.current?.stop();
+        microphone.current = null;
         dispatch({ type: 'engine-unavailable' });
         setMessage('ローカル音声認識が停止しました。入力を終了して合成デモへ切り替えられます。');
       };

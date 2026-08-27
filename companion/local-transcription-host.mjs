@@ -204,6 +204,7 @@ export function createCompanionServer(options = {}) {
       return sendJson(response, 200, { state: 'listening' }, origin);
     }
     if (request.method === 'POST' && action === 'stop') {
+      if (session.stopped) return sendJson(response, 200, { state: 'stopped' }, origin);
       session.stopped = true;
       session.worker.stdin.end(frameForWorker(2));
       setTimeout(() => { if (!session.worker.killed) session.worker.kill(); }, 3_000).unref();

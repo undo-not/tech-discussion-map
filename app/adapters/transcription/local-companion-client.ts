@@ -2,6 +2,7 @@ import { parseTranscriptUtterance, type TranscriptUtterance, type UtteranceSourc
 
 const companionOrigin = 'http://127.0.0.1:43117';
 const maximumAudioChunkBytes = 128 * 1024;
+const maximumQueuedAudioBytes = 512 * 1024;
 
 function companionUrl(path: string): URL {
   const url = new URL(path, companionOrigin);
@@ -23,6 +24,7 @@ export class LocalCompanionTranscriptionClient {
   #sessionId = '';
   #cursor = 0;
   #closed = false;
+  #queuedAudioBytes = 0;
   #sendChain: Promise<void> = Promise.resolve();
 
   constructor(source: UtteranceSource, onUtterance: (utterance: TranscriptUtterance) => void) {
@@ -62,15 +64,21 @@ export class LocalCompanionTranscriptionClient {
       return Promise.reject(new Error('audio-chunk-out-of-bounds'));
     }
     const owned = bytes.slice();
-    this.#sendChain = this.#sendChain.then(async () => {
+    if (this.#queuedAudioBytes + owned.byteLength > maximumQueuedAudioBytes) {
+      this.#fail('audio-backpressure');
+      return Promise.reject(new Error('audio-backpressure'));
+    }
+    this.#queuedAudioBytes += owned.byteLength;
+    const operation = this.#sendChain.then(async () => {
       const response = await this.#request(`/v1/sessions/${this.#sessionId}/audio`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: owned,
       });
       if (!response.ok) throw new Error(`local-engine-${response.status}`);
-    });
-    return this.#sendChain;
+    }).finally(() => { this.#queuedAudioBytes -= owned.byteLength; });
+    this.#sendChain = operation.catch((error) => { this.#fail(error instanceof Error ? error.message : 'local-engine-failed'); });
+    return operation;
   }
 
   async pause(): Promise<void> { await this.#control('pause'); }
@@ -101,14 +109,10 @@ export class LocalCompanionTranscriptionClient {
         for (const event of value.events) this.#onUtterance(parseTranscriptUtterance(event));
         this.#cursor = value.cursor as number;
         if (value.stopped && !this.#closed) {
-          this.#closed = true;
-          this.onFailure('local-engine-stopped');
+          this.#fail('local-engine-stopped');
         }
       } catch (error) {
-        if (!this.#closed) {
-          this.#closed = true;
-          this.onFailure(error instanceof Error ? error.message : 'local-engine-failed');
-        }
+        this.#fail(error instanceof Error ? error.message : 'local-engine-failed');
       }
     }
   }
@@ -120,6 +124,13 @@ export class LocalCompanionTranscriptionClient {
       headers: { ...init.headers, Authorization: `Bearer ${this.#token}` },
     });
   }
+
+  #fail(reason: string): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#sessionId) void this.#request(`/v1/sessions/${this.#sessionId}/stop`, { method: 'POST' }).catch(() => undefined);
+    this.onFailure(reason);
+  }
 }
 
-export { companionOrigin, companionUrl, maximumAudioChunkBytes };
+export { companionOrigin, companionUrl, maximumAudioChunkBytes, maximumQueuedAudioBytes };

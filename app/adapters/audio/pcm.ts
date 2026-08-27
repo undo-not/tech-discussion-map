@@ -16,6 +16,8 @@ export function downmixAndResample48kStereoTo16kMono(input: Uint8Array): Uint8Ar
   const output = new Uint8Array((input.byteLength / 12) * 2);
   const target = new DataView(output.buffer);
   for (let sourceOffset = 0, targetOffset = 0; sourceOffset < input.byteLength; sourceOffset += 12, targetOffset += 2) {
+    // A three-frame boxcar low-pass is applied before the 3:1 decimation. This is
+    // intentionally small for the MVP; Issue #7 evaluates a higher-order filter.
     let sum = 0;
     for (let frame = 0; frame < 3; frame += 1) {
       sum += source.getInt16(sourceOffset + frame * 4, true);

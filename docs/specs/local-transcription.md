@@ -25,7 +25,8 @@ MVP must not infer an individual identity from the remote mixed stream.
 ## Data and network boundary
 
 - Browser microphone PCM: 16 kHz, mono, signed 16-bit little endian, maximum 128 KiB per request.
-- Teams PCM: 48 kHz stereo signed 16-bit little endian, downmixed and decimated to the shared input format.
+- Browser送信queue: maximum 512 KiB. local hostが追いつかない場合は古い音声を蓄積せず、sessionを`engine-unavailable`へfail closedする。
+- Teams PCM: 48 kHz stereo signed 16-bit little endian, three-frame boxcar low-passでdownmixしてから3:1 decimationし、shared input formatへ変換する。
 - Companion listener: exactly `127.0.0.1:43117`.
 - Allowed UI origins: `http://127.0.0.1:3000` and `http://localhost:3000`.
 - Browser authorization: 256-bit random token, memory-only, Origin-bound, ten-minute expiry.

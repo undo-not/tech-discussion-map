@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { downmixAndResample48kStereoTo16kMono } from '../adapters/audio/pcm.ts';
 import { isLoopbackRuntime } from '../adapters/audio/browser-microphone.ts';
-import { companionUrl, maximumAudioChunkBytes } from '../adapters/transcription/local-companion-client.ts';
+import { companionUrl, maximumAudioChunkBytes, maximumQueuedAudioBytes } from '../adapters/transcription/local-companion-client.ts';
 import { transitionTranscriptionSession } from '../domain/transcription/session.ts';
 import { applyTranscriptEvent, emptyTranscriptState } from '../domain/transcription/utterance.ts';
 import { createCompanionServer, frameForWorker, parseWorkerEvents } from '../../companion/local-transcription-host.mjs';
@@ -50,6 +50,7 @@ test('transcription client refuses every non-loopback network target', () => {
   assert.equal(companionUrl('/v1/bootstrap').origin, 'http://127.0.0.1:43117');
   assert.throws(() => companionUrl('https://example.com/upload'), /loopback-only/);
   assert.equal(maximumAudioChunkBytes, 128 * 1024);
+  assert.equal(maximumQueuedAudioBytes, 512 * 1024);
   assert.equal(isLoopbackRuntime({ protocol: 'http:', hostname: '127.0.0.1' }), true);
   assert.equal(isLoopbackRuntime({ protocol: 'https:', hostname: 'public.example' }), false);
 });
