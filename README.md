@@ -10,6 +10,9 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 
 - `app/`: 共通UI層と、Sites/Vinextによる合成データreview surface
 - `native/windows-audio/`: Teams process treeだけを対象にするWindows音声helper
+- `native/transcription/`: pinned whisper.cppを使うmemory-only文字起こしworker
+- `companion/`: browserとnative helperを接続するloopback-only host
+- `scripts/`: 会議外で実行する検証付きmodel setup
 - `docs/specs/`: 現在のproduct behavior
 - `docs/policies/`: Issue、PR、データ、agent協働の運用規約
 - `docs/adr/`: 永続的な技術判断
@@ -22,9 +25,11 @@ Node.js 22.13以降とpnpmを使用します。
 ```powershell
 cd app
 pnpm install
-pnpm run dev
+pnpm run dev --hostname 127.0.0.1 --port 3000
 ```
 
 検証コマンドは[AGENTS.md](AGENTS.md)を参照してください。
 
 Windows音声helperのbuildと非capturing capability checkは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。実会議captureはIssue #6の同意・privacy gateが完成するまで実行しません。
+
+ローカル文字起こしは[local transcription specification](docs/specs/local-transcription.md)に従います。会議前に`powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-model.ps1`でchecksum検証済みmodelを導入し、native workerをbuildしてから`node companion/local-transcription-host.mjs`を起動します。公開URLではマイク入力は無効で、合成デモだけが動作します。

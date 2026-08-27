@@ -1,0 +1,22 @@
+# Generated native output
+**/build/
+**/out/
+
+# Local secrets and configuration
+.env
+.env.*
+!.env.example
+
+# Models and meeting data must never enter the public repository
+*.bin
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.pcm
+*.raw
+*.transcript
+*.jsonl
+recordings/
+sessions/
+data/local/

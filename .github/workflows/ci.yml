@@ -59,3 +59,20 @@ jobs:
           path: native/windows-audio/build/Release/techmap-audio.exe
           if-no-files-found: error
           retention-days: 7
+
+  native-transcription:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure pinned whisper.cpp worker
+        run: cmake -S native/transcription -B native/transcription/build -A x64
+      - name: Build local transcription worker
+        run: cmake --build native/transcription/build --config Release
+      - name: Test transcription protocol
+        run: ctest --test-dir native/transcription/build -C Release --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: techmap-transcriber-windows-x64
+          path: native/transcription/build/Release/techmap-transcriber.exe
+          if-no-files-found: error
+          retention-days: 7

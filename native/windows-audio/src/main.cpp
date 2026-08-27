@@ -444,9 +444,12 @@ int RunCapture(DWORD processId, bool consentConfirmed, std::uint64_t durationMil
         }
 
         UINT32 packetFrames = 0;
+        std::vector<std::uint8_t> ownedPayload;
         while (SUCCEEDED(result = captureClient->GetNextPacketSize(&packetFrames)) && packetFrames > 0) {
             const std::uint32_t expectedByteCount = packetFrames * format.nBlockAlign;
-            std::vector<std::uint8_t> ownedPayload(expectedByteCount, 0);
+            if (ownedPayload.size() < expectedByteCount) {
+                ownedPayload.resize(expectedByteCount);
+            }
             BYTE* data = nullptr;
             DWORD flags = 0;
             result = captureClient->GetBuffer(&data, &packetFrames, &flags, nullptr, nullptr);
@@ -463,12 +466,19 @@ int RunCapture(DWORD processId, bool consentConfirmed, std::uint64_t durationMil
             }
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0 && data != nullptr) {
                 std::memcpy(ownedPayload.data(), data, byteCount);
+            } else {
+                std::fill_n(ownedPayload.data(), byteCount, 0);
             }
 
             const bool stateChanged = tracker.ObserveSignal(hasSignal, GetTickCount64());
+            const bool dataDiscontinuity = (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0;
             const HRESULT releaseResult = captureClient->ReleaseBuffer(packetFrames);
             if (FAILED(releaseResult)) {
                 result = releaseResult;
+                break;
+            }
+            if (dataDiscontinuity && !EmitState(tracker.state(), "data-discontinuity")) {
+                result = HRESULT_FROM_WIN32(ERROR_BROKEN_PIPE);
                 break;
             }
             if (!WriteFrame(FrameType::Pcm, ownedPayload.data(), byteCount)) {

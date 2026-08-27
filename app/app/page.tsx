@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { CapturePanel } from '@/components/capture-panel';
 import workspace from '@/fixtures/workspace.json';
 
 export default function Home() {
@@ -44,7 +45,7 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#f3f2ed] text-[#1d2927] xl:grid xl:h-screen xl:min-h-0 xl:grid-rows-[auto_1fr] xl:overflow-hidden">
+    <main className="min-h-screen bg-[#f3f2ed] text-[#1d2927] xl:grid xl:h-screen xl:min-h-0 xl:grid-rows-[auto_auto_1fr] xl:overflow-hidden">
       <header className="border-b border-[#d9ded8] bg-[#f9f8f4]/95 px-4 py-3 backdrop-blur md:px-6">
         <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
@@ -58,6 +59,8 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      <CapturePanel />
 
       <section className="mx-auto grid w-full max-w-[1600px] gap-3 p-3 xl:min-h-0 xl:grid-cols-[minmax(250px,0.72fr)_minmax(520px,1.65fr)_minmax(270px,0.78fr)] xl:p-4">
         <aside className="flex min-h-[360px] flex-col overflow-hidden rounded-2xl border border-[#d9ded8] bg-[#fbfaf7] shadow-[0_8px_30px_rgba(35,54,49,0.05)] xl:min-h-0">
