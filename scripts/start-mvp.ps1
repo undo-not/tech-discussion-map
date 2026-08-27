@@ -19,7 +19,7 @@ function Start-OwnedProcess([string]$WorkingDirectory, [string[]]$Arguments, [ha
   $start.FileName = $nodePath
   $start.WorkingDirectory = $WorkingDirectory
   $start.UseShellExecute = $false
-  $start.CreateNoWindow = $true
+  $start.CreateNoWindow = $false
   $quotedArguments = $Arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }
   $start.Arguments = $quotedArguments -join ' '
   foreach ($key in $Environment.Keys) { $start.EnvironmentVariables[$key] = $Environment[$key] }
@@ -46,18 +46,29 @@ function Stop-OwnedProcess([System.Diagnostics.Process]$Process) {
 
 function Set-WebLaunchSecret([string]$Secret) {
   $client = [System.Net.Http.HttpClient]::new()
-  $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, 'http://127.0.0.1:3000/api/local-launch')
-  [void]$request.Headers.TryAddWithoutValidation('Origin', 'http://127.0.0.1:3000')
-  $request.Content = [System.Net.Http.StringContent]::new((ConvertTo-Json @{ launchSecret = $Secret } -Compress), [System.Text.Encoding]::UTF8, 'application/json')
-  $request.Content.Headers.ContentType.CharSet = $null
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
   try {
-    $response = $client.SendAsync($request).GetAwaiter().GetResult()
-    try { if (-not $response.IsSuccessStatusCode) { throw "UI launch-secret provisioning failed with status $([int]$response.StatusCode)." } }
-    finally { $response.Dispose() }
-  } finally {
-    $request.Dispose()
-    $client.Dispose()
-  }
+    while ([DateTime]::UtcNow -lt $deadline) {
+      $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, 'http://127.0.0.1:3000/api/local-launch')
+      [void]$request.Headers.TryAddWithoutValidation('Origin', 'http://127.0.0.1:3000')
+      $request.Content = [System.Net.Http.StringContent]::new((ConvertTo-Json @{ launchSecret = $Secret } -Compress), [System.Text.Encoding]::UTF8, 'application/json')
+      $request.Content.Headers.ContentType.CharSet = $null
+      try {
+        try { $response = $client.SendAsync($request).GetAwaiter().GetResult() }
+        catch {
+          if ([DateTime]::UtcNow -ge $deadline) { throw }
+          Start-Sleep -Milliseconds 200
+          continue
+        }
+        try {
+          if ($response.IsSuccessStatusCode) { return }
+          if ([int]$response.StatusCode -notin @(404, 503)) { throw "UI launch-secret provisioning failed with status $([int]$response.StatusCode)." }
+        } finally { $response.Dispose() }
+      } finally { $request.Dispose() }
+      Start-Sleep -Milliseconds 200
+    }
+    throw 'Timed out waiting for the UI launch-secret route.'
+  } finally { $client.Dispose() }
 }
 
 $companion = $null
@@ -66,7 +77,7 @@ try {
   $companion = Start-OwnedProcess $repositoryRoot @($companionEntry) @{
     TECHMAP_LAUNCH_SECRET = $launchSecret
   }
-  $web = Start-OwnedProcess (Join-Path $repositoryRoot 'app') @($webCli, 'dev', '--hostname', '127.0.0.1', '--port', '3000') @{}
+  $web = Start-OwnedProcess (Join-Path $repositoryRoot 'app') @($webCli, 'start', '--hostname', '127.0.0.1', '--port', '3000') @{}
   Wait-Loopback 43117 $companion
   Wait-Loopback 3000 $web
   Set-WebLaunchSecret $launchSecret

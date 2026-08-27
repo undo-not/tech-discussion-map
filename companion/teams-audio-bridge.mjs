@@ -185,7 +185,9 @@ export function attachTeamsAudioBridge(options) {
       if (!audioWorker.killed) audioWorker.kill();
       if (!transcriptionWorker.killed) {
         const stopFrame = frameForWorker(2);
-        transcriptionWorker.stdin.end(stopFrame, () => stopFrame.fill(0));
+        const zeroTimer = setTimeout(() => stopFrame.fill(0), 3_000);
+        zeroTimer.unref?.();
+        transcriptionWorker.stdin.end(stopFrame, () => { clearTimeout(zeroTimer); stopFrame.fill(0); });
         setTimeout(() => { if (!transcriptionWorker.killed) transcriptionWorker.kill(); }, 3_000).unref?.();
       }
     },

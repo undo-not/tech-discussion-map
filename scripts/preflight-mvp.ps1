@@ -9,6 +9,10 @@ function Assert-Leaf([string]$Path, [string]$Description) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Description is missing: $Path" }
 }
 
+function Assert-Directory([string]$Path, [string]$Description) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "$Description is missing: $Path" }
+}
+
 function Test-PortAvailable([int]$Port) {
   $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
   try { $listener.Start(); return $true } catch { return $false } finally { $listener.Stop() }
@@ -25,7 +29,7 @@ if ($ContractOnly) {
   }
   $startSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'start-mvp.ps1') -Raw
   if ($startSource -match 'techmap-launch|launchUrl|Start-Process\s+[^\r\n]*Secret') { throw 'Launch secret must not appear in a URL or browser process argument.' }
-  foreach ($requiredPattern in @('Set-WebLaunchSecret \$launchSecret', "Start-Process 'http://127\.0\.0\.1:3000/'", 'taskkill\.exe /PID \$Process\.Id /T /F')) {
+  foreach ($requiredPattern in @('Set-WebLaunchSecret \$launchSecret', "Start-Process 'http://127\.0\.0\.1:3000/'", "@\(\`$webCli, 'start', '--hostname', '127\.0\.0\.1', '--port', '3000'\)", 'taskkill\.exe /PID \$Process\.Id /T /F')) {
     if ($startSource -notmatch $requiredPattern) { throw "MVP launcher behavior is missing: $requiredPattern" }
   }
   Write-Output 'MVP launcher contract: PASS'
@@ -45,6 +49,7 @@ $required = @(
   @{ Path = Join-Path $repositoryRoot 'native\privacy\build\Release\techmap-privacy.exe'; Description = 'Privacy helper' }
 )
 foreach ($item in $required) { Assert-Leaf $item.Path $item.Description }
+Assert-Directory (Join-Path $repositoryRoot 'app\dist\server') 'Production web build'
 
 $ocrRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TechMapLive\ocr\current'
 $manifestPath = Join-Path $ocrRoot 'techmap-ocr.manifest'

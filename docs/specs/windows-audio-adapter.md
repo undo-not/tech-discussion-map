@@ -48,6 +48,8 @@ The TypeScript consumer rejects an invalid magic value, unsupported version, unk
 
 After a degraded transition, the host must stop the old helper and require the user to reconnect. Only a newly successful helper start associated with that explicit reconnect may return the workspace to `active`.
 
+The browser event poll is also the ownership heartbeat. The companion grants each Teams audio fallback session a 30-second lease and renews it on every authenticated event poll. If the tab closes, crashes, or stops polling, the companion stops both native workers, clears queued events, and releases the single fallback slot. A bearer remaining valid does not keep an unobserved audio capture alive.
+
 ## Privacy boundary
 
 - The native code has no audio file, temporary file, or diagnostic audio path.

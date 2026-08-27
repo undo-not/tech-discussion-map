@@ -48,4 +48,6 @@ test('launcher source never places the secret in a URL, process argument, or log
   assert.match(source, /Set-WebLaunchSecret \$launchSecret/);
   assert.match(source, /Start-Process 'http:\/\/127\.0\.0\.1:3000\/'/);
   assert.match(source, /TECHMAP_LAUNCH_SECRET = \$launchSecret/);
+  assert.match(source, /@\(\$webCli, 'start', '--hostname', '127\.0\.0\.1', '--port', '3000'\)/);
+  assert.match(source, /AddSeconds\(30\)[\s\S]*Set-WebLaunchSecret/);
 });

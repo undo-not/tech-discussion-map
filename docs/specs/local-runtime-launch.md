@@ -17,7 +17,7 @@ preflightはTeams、microphone、screen、OpenAIへアクセスしない。`-Con
 
 ## Startup and shutdown
 
-`scripts/start-mvp.ps1`はcryptographic random launch secretをmemoryに生成する。companionへはenvironment経由で渡し、companion entrypointが直ちにenvironmentから削除する。UI serverへはready確認後、browserを開く前にloopback-only HTTP bodyで一度だけprovisionし、UI server memoryだけに保持する。secretをprocess command line、URL、browser history、file、console、logへ書かない。launcherはsecretを含まないplain loopback URLを既定browserで開く。browserはsame-origin・exact JSON POSTでUI serverのmemoryからsecretを取得し、companion bootstrapにだけ使用する。endpointは未provisionのpublic runtimeで404となり、二度目のprovisionを拒否する。
+`scripts/start-mvp.ps1`は検証済みproduction buildを起動し、cryptographic random launch secretをmemoryに生成する。companionへはenvironment経由で渡し、companion entrypointが直ちにenvironmentから削除する。UI serverへはroute readinessを再試行して確認後、browserを開く前にloopback-only HTTP bodyで一度だけprovisionし、UI server memoryだけに保持する。secretをprocess command line、URL、browser history、file、console、logへ書かない。launcherはsecretを含まないplain loopback URLを既定browserで開く。browserはsame-origin・exact JSON POSTでUI serverのmemoryからsecretを取得し、companion bootstrapにだけ使用する。endpointは未provisionのpublic runtimeで404となり、二度目のprovisionを拒否する。
 
 launcherはforegroundに残り、Ctrl+Cまたはいずれかの子process終了時に、自分が開始したUI／companion process treeだけを停止する。stdout／stderrはterminalへ表示できるが、fileへredirectせず、meeting content、OCR画像、TSV、生音声、credential、launch secretを出力してはならない。
 

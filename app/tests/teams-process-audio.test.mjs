@@ -214,8 +214,8 @@ test('authenticated companion exposes only typed Teams audio events to the brows
   await mkdir(join(root, 'TechMapLive', 'models'), { recursive: true });
   await Promise.all([writeFile(modelPath, 'synthetic'), writeFile(workerPath, 'synthetic'), writeFile(audioWorkerPath, 'synthetic')]);
   const launchSecret = 'b'.repeat(64);
-  const captureWorker = new FakeWorker();
-  const transcriptionWorker = new FakeWorker();
+  const captureWorkers = [];
+  const transcriptionWorkers = [];
   const probeReport = {
     windowsBuild: 26_100, minimumBuild: 20_348, supportedBuild: true, teamsProcessCount: 1,
     selectedProcessId: 4242, targetFound: true, activationAttempted: true, activationSucceeded: true,
@@ -228,13 +228,18 @@ test('authenticated companion exposes only typed Teams audio events to the brows
       return worker;
     }
     assert.deepEqual(args, ['capture', '--pid', '4242', '--consent-confirmed']);
-    return captureWorker;
+    const worker = new FakeWorker();
+    captureWorkers.push(worker);
+    return worker;
   };
   const server = createCompanionServer({
     environment: { LOCALAPPDATA: root }, modelPath, workerPath, audioWorkerPath, launchSecret,
+    teamsAudioIdleTimeoutMs: 500,
     spawnAudioWorker, spawnWorker: (args) => {
       assert.deepEqual(args, ['--model', modelPath, '--source', 'remote', '--language', 'ja']);
-      return transcriptionWorker;
+      const worker = new FakeWorker();
+      transcriptionWorkers.push(worker);
+      return worker;
     },
   });
   await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
@@ -259,6 +264,8 @@ test('authenticated companion exposes only typed Teams audio events to the brows
   });
   assert.equal(started.status, 201);
   const { sessionId } = await started.json();
+  const captureWorker = captureWorkers[0];
+  const transcriptionWorker = transcriptionWorkers[0];
 
   const format = frame(3, JSON.stringify({ sampleRate: 48_000, channels: 2, bitsPerSample: 16, encoding: 'pcm-s16le' }));
   const active = frame(1, JSON.stringify({ state: 'active', reason: 'capture-started' }));
@@ -281,6 +288,20 @@ test('authenticated companion exposes only typed Teams audio events to the brows
   const stopped = await fetch(`${base}/v1/teams-audio-sessions/${sessionId}/stop`, { method: 'POST', headers });
   assert.equal(stopped.status, 200);
   assert.equal(captureWorker.killed, true);
+
+  const abandoned = await fetch(`${base}/v1/teams-audio-sessions`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ consentConfirmed: true, processId: 4242 }),
+  });
+  assert.equal(abandoned.status, 201);
+  await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+  assert.equal(captureWorkers[1].killed, true);
+  assert.equal(transcriptionWorkers[1].stdin.writableEnded, true);
+  const recovered = await fetch(`${base}/v1/teams-audio-sessions`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ consentConfirmed: true, processId: 4242 }),
+  });
+  assert.equal(recovered.status, 201, 'abandoned capture releases the single fallback slot');
+  const recoveredSession = await recovered.json();
+  await fetch(`${base}/v1/teams-audio-sessions/${recoveredSession.sessionId}/stop`, { method: 'POST', headers });
 });
 
 test('native helper has no file persistence or system-wide fallback path', async () => {

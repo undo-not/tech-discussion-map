@@ -18,6 +18,7 @@ const maximumPrivacyRequestBytes = 1024 * 1024;
 const maximumAnalysisRequestBytes = 32 * 1024;
 const allowedOrigins = new Set(['http://127.0.0.1:3000', 'http://localhost:3000']);
 const defaultTokenLifetimeMs = 10 * 60 * 1000;
+const defaultTeamsAudioIdleTimeoutMs = 30 * 1000;
 
 function sendJson(response, status, value, origin) {
   const encoded = Buffer.from(JSON.stringify(value));
@@ -168,13 +169,15 @@ export function createCompanionServer(options = {}) {
   const now = options.now ?? Date.now;
   const tokenLifetimeMs = options.tokenLifetimeMs ?? defaultTokenLifetimeMs;
   if (!Number.isSafeInteger(tokenLifetimeMs) || tokenLifetimeMs < 1_000 || tokenLifetimeMs > 24 * 60 * 60 * 1000) throw new Error('invalid-token-lifetime');
+  const teamsAudioIdleTimeoutMs = options.teamsAudioIdleTimeoutMs ?? defaultTeamsAudioIdleTimeoutMs;
+  if (!Number.isSafeInteger(teamsAudioIdleTimeoutMs) || teamsAudioIdleTimeoutMs < 100 || teamsAudioIdleTimeoutMs > 5 * 60 * 1000) throw new Error('invalid-teams-audio-idle-timeout');
   const launchSecret = options.launchSecret ?? randomBytes(32).toString('hex');
   if (!/^[a-f0-9]{64}$/.test(launchSecret)) throw new Error('invalid-launch-secret');
   const tokens = new Map();
   const sessions = new Map();
   const captionSessions = new Map();
   const teamsAudioSessions = new Map();
-  const globalAnalysisBudget = { windowStart: Date.now(), calls: 0 };
+  const globalAnalysisBudget = { windowStart: now(), calls: 0 };
 
   if (!pathIsWithin(defaults.modelRoot, modelPath)) throw new Error('Model must remain under LocalAppData\\TechMapLive\\models');
 
@@ -224,9 +227,9 @@ export function createCompanionServer(options = {}) {
       try { analysisRequest = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; assertPrivacySafeResponsesRequest(analysisRequest); }
       catch { return sendJson(response, 400, { error: 'analysis-request-rejected' }, origin); }
       if (JSON.stringify(analysisRequest.text?.format) !== JSON.stringify(analysisStructuredOutput)) return sendJson(response, 400, { error: 'analysis-schema-rejected' }, origin);
-      const now = Date.now();
-      if (now - tokenState.analysisWindowStart >= 60_000) { tokenState.analysisWindowStart = now; tokenState.analysisCalls = 0; }
-      if (now - globalAnalysisBudget.windowStart >= 60_000) { globalAnalysisBudget.windowStart = now; globalAnalysisBudget.calls = 0; }
+      const requestTime = now();
+      if (requestTime - tokenState.analysisWindowStart >= 60_000) { tokenState.analysisWindowStart = requestTime; tokenState.analysisCalls = 0; }
+      if (requestTime - globalAnalysisBudget.windowStart >= 60_000) { globalAnalysisBudget.windowStart = requestTime; globalAnalysisBudget.calls = 0; }
       if (tokenState.analysisCalls >= 6 || globalAnalysisBudget.calls >= 12) return sendJson(response, 429, { error: 'analysis-rate-limited' }, origin);
       // No await may occur between this check and reservation: concurrent validated requests are serialized by the event loop here.
       tokenState.analysisCalls += 1;
@@ -411,7 +414,7 @@ export function createCompanionServer(options = {}) {
         return sendJson(response, 503, { error: 'teams-audio-engine-start-failed' }, origin);
       }
       const id = randomUUID();
-      const session = { id, stopped: false, cursor: 0, events: [], bridge: null };
+      const session = { id, stopped: false, cursor: 0, events: [], bridge: null, idleTimer: null, armIdleTimer: null };
       const pushEvent = (value) => {
         if (session.stopped) return;
         session.cursor += 1;
@@ -428,10 +431,24 @@ export function createCompanionServer(options = {}) {
         onFailure: (reason) => {
           pushEvent({ type: 'capture-state', state: 'degraded-microphone-only', reason });
           session.stopped = true;
+          if (session.idleTimer) clearTimeout(session.idleTimer);
           setTimeout(() => teamsAudioSessions.delete(session.id), 60_000).unref();
         },
       });
+      session.armIdleTimer = () => {
+        if (session.stopped) return;
+        if (session.idleTimer) clearTimeout(session.idleTimer);
+        session.idleTimer = setTimeout(() => {
+          if (session.stopped) return;
+          session.stopped = true;
+          session.events.length = 0;
+          session.bridge.stop();
+          teamsAudioSessions.delete(session.id);
+        }, teamsAudioIdleTimeoutMs);
+        session.idleTimer.unref?.();
+      };
       teamsAudioSessions.set(id, session);
+      session.armIdleTimer();
       return sendJson(response, 201, { sessionId: id }, origin);
     }
 
@@ -441,6 +458,7 @@ export function createCompanionServer(options = {}) {
       if (!teamsAudioSession) return sendJson(response, 404, { error: 'teams-audio-session-not-found' }, origin);
       const action = teamsAudioMatch[2];
       if (request.method === 'GET' && action === 'events') {
+        teamsAudioSession.armIdleTimer();
         const after = Number(url.searchParams.get('after') ?? '0');
         if (!Number.isSafeInteger(after) || after < 0) return sendJson(response, 400, { error: 'invalid-cursor' }, origin);
         if (!teamsAudioSession.events.some((event) => event.cursor > after) && !teamsAudioSession.stopped) await new Promise((resolveWait) => setTimeout(resolveWait, 200));
@@ -452,6 +470,7 @@ export function createCompanionServer(options = {}) {
       }
       if (request.method === 'POST' && action === 'stop') {
         teamsAudioSession.stopped = true;
+        if (teamsAudioSession.idleTimer) clearTimeout(teamsAudioSession.idleTimer);
         teamsAudioSession.bridge.stop();
         teamsAudioSession.events.length = 0;
         setTimeout(() => teamsAudioSessions.delete(teamsAudioSession.id), 60_000).unref();
@@ -553,7 +572,10 @@ export function createCompanionServer(options = {}) {
       session.events.length = 0;
       if (session.worker && !session.worker.killed) session.worker.kill();
     }
-    for (const session of teamsAudioSessions.values()) session.bridge.stop();
+    for (const session of teamsAudioSessions.values()) {
+      if (session.idleTimer) clearTimeout(session.idleTimer);
+      session.bridge.stop();
+    }
     sessions.clear();
     captionSessions.clear();
     teamsAudioSessions.clear();
