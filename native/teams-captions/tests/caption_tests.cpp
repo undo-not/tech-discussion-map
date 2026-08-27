@@ -1,4 +1,6 @@
 #include "caption_geometry.h"
+#include "caption_frame.h"
+#include "caption_proof.h"
 #include "caption_rows.h"
 #include "caption_speaker.h"
 #include "caption_tsv.h"
@@ -25,6 +27,13 @@ std::string Header() {
 } // namespace
 
 int main() {
+    constexpr auto newlineSizedFrame = CaptionFrameHeader(1, 10);
+    Require(newlineSizedFrame[8] == 0x0a && newlineSizedFrame[9] == 0 && newlineSizedFrame[10] == 0 && newlineSizedFrame[11] == 0,
+        "binary frame length was not encoded byte-for-byte");
+    Require(ProofPipeHasNoTrailingBytes(true, 0, false), "open empty proof pipe rejected");
+    Require(ProofPipeHasNoTrailingBytes(false, 0, true), "normally closed proof pipe rejected");
+    Require(!ProofPipeHasNoTrailingBytes(true, 1, false), "trailing proof byte accepted");
+    Require(!ProofPipeHasNoTrailingBytes(false, 0, false), "unexpected proof pipe failure accepted");
     const WindowSnapshot valid{{100, 100, 2'000, 900}, 144, true, true, false, true};
     Require(ValidateSelection(valid, {120, 200, 1'900, 700}, 144) == SelectionDecision::Allowed, "valid selection rejected");
     Require(ValidateSelection(valid, {99, 200, 1'900, 700}, 144) == SelectionDecision::SelectionOutsideClient, "outside selection accepted");
@@ -46,6 +55,9 @@ int main() {
     Require(parsed[0].confidence == 91, "TSV confidence not averaged deterministically");
     Require(ParseTesseractTsv("bad header\n").empty(), "bad header accepted");
     Require(ParseTesseractTsv(Header() + "5\t1\t1\t1\t1\t1\t0\t0\t1\t1\t-1\tunsafe\n").empty(), "negative confidence accepted");
+    const std::string oversizedWord(8'001, 'x');
+    Require(ParseTesseractTsv(Header() + "5\t1\t1\t1\t1\t1\t0\t0\t1\t1\t95\t" + oversizedWord + "\n").empty(),
+        "oversized plaintext line accepted");
 
     SpeakerAliasTable aliases;
     const auto safe = aliases.Anonymize(parsed[0]);
@@ -59,6 +71,14 @@ int main() {
     Require(anonymous && anonymous->speaker == "anonymous" && anonymous->speakerAlias.empty(), "anonymous speaker not normalized");
     aliases.Clear();
     Require(aliases.Size() == 0, "alias table not cleared");
+    for (std::size_t index = 1; index <= 999; ++index) {
+        const auto assigned = aliases.Anonymize({"bulk", "Synthetic-" + std::to_string(index) + ": body", 95});
+        Require(assigned && assigned->speakerAlias == "speaker-" + std::to_string(index), "bounded alias assignment failed");
+    }
+    const auto exhausted = aliases.Anonymize({"bulk-overflow", "Synthetic-1000: body", 95});
+    Require(exhausted && exhausted->speaker == "unknown" && exhausted->speakerAlias.empty() && aliases.Size() == 999,
+        "alias exhaustion retained a new raw identity");
+    aliases.Clear();
 
     CaptionRowTracker tracker;
     const std::vector<SafeCaptionLine> frame{{"line-1", "displayed-alias", "speaker-1", "synthetic design", 91}};

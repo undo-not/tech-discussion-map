@@ -264,7 +264,14 @@ export function createCompanionServer(options = {}) {
       session.worker = worker;
       session.stopped = false;
       session.paused = false;
-      worker.stdin.end(sessionProof);
+      worker.stdin.on('error', () => {
+        if (session.worker !== worker || session.paused || session.stopped) return;
+        session.stopped = true;
+        clearCaptionSessionBuffers(session);
+        if (!worker.killed) worker.kill();
+      });
+      try { worker.stdin.end(sessionProof); }
+      catch { worker.stdin.emit('error', new Error('caption-proof-write-failed')); }
       worker.stdout.on('data', (chunk) => {
         if (session.worker !== worker || session.paused || session.stopped) { chunk.fill(0); return; }
         try {
@@ -294,7 +301,12 @@ export function createCompanionServer(options = {}) {
         return sendJson(response, 400, { error: 'caption-consent-required' }, origin);
       }
       if (!existsSync(captionWorkerPath)) return sendJson(response, 503, { error: 'caption-engine-not-installed' }, origin);
-      for (const [id, existing] of captionSessions) if (existing.stopped) captionSessions.delete(id);
+      for (const [id, existing] of captionSessions) {
+        if (!existing.stopped) continue;
+        clearCaptionSessionBuffers(existing);
+        detachCaptionWorker(existing);
+        captionSessions.delete(id);
+      }
       if (captionSessions.size >= 2) return sendJson(response, 429, { error: 'too-many-caption-sessions' }, origin);
       const id = randomUUID();
       const session = { id, worker: null, paused: false, stopped: false, cursor: 0, events: [], parser: { buffer: Buffer.alloc(0) } };

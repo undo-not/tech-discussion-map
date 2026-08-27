@@ -56,10 +56,12 @@ test('OCR capture is consent-gated, selected-region-only, bounded, and memory-on
   assert.match(main, /--session-proof/);
   const entryPoint = main.slice(main.indexOf('int wmain'), main.indexOf('if (argc == 2 && wcscmp(argv[1], L"contract")'));
   assert.match(entryPoint, /SetProcessDpiAwarenessContext\(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2\)/);
+  assert.match(entryPoint, /_setmode\(_fileno\(stdout\), _O_BINARY\)/);
   assert.match(runtime, /GetFileType\(GetStdHandle\(STD_OUTPUT_HANDLE\)\) == FILE_TYPE_PIPE/);
   assert.match(runtime, /GetFileType\(input\) != FILE_TYPE_PIPE/);
   assert.match(runtime, /VerifyCompanionProof/);
   assert.match(runtime, /ParentIsNode/);
+  assert.match(runtime, /ERROR_BROKEN_PIPE/);
   assert.match(runtime, /SetWindowDisplayAffinity\(overlay, WDA_EXCLUDEFROMCAPTURE\)/);
   assert.match(runtime, /const int width = static_cast<int>\(Width\(selection\)\)/);
   assert.match(runtime, /CreateDIBSection/);
@@ -101,12 +103,14 @@ test('local Tesseract is hash-pinned and runs in a bounded job through memory pi
 test('raw OCR names and TSV are anonymized before framed output', async () => {
   const root = resolve(testDirectory, '..', '..', 'native', 'teams-captions', 'src');
   const speaker = await readFile(resolve(root, 'caption_speaker.h'), 'utf8');
+  const parser = await readFile(resolve(root, 'caption_tsv.h'), 'utf8');
   const runtime = await readFile(resolve(root, 'ocr_runtime.cpp'), 'utf8');
   const outputBoundary = runtime.slice(runtime.indexOf('bool EmitRowEvent'), runtime.indexOf('const char* DecisionReason'));
   assert.match(speaker, /speaker-/);
   assert.match(speaker, /std::fill\(entry\.name\.begin\(\), entry\.name\.end\(\), '\\0'\)/);
   assert.match(runtime, /SecureZeroMemory\(line\.text\.data\(\), line\.text\.size\(\)\)/);
   assert.match(runtime, /SecureZeroMemory\(event\.text\.data\(\), event\.text\.size\(\)\)/);
+  assert.match(parser, /std::fill\(line\.text\.begin\(\), line\.text\.end\(\), '\\0'\)/);
   assert.ok(runtime.indexOf('bool EmitRowEvent') >= 0);
   assert.ok(runtime.indexOf('const char* DecisionReason') >= 0);
   assert.doesNotMatch(outputBoundary, /displayName|participant|tsv|bitmap|pixels/);

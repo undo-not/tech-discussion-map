@@ -7,8 +7,10 @@
 #include "ocr_runtime.h"
 
 #include <algorithm>
+#include <fcntl.h>
 #include <cstdio>
 #include <cwchar>
+#include <io.h>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -253,7 +255,8 @@ std::optional<std::string> ParseSessionProof(const wchar_t* value) {
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return 3;
+    if (_setmode(_fileno(stdout), _O_BINARY) == -1) return 3;
     if (argc == 2 && wcscmp(argv[1], L"contract") == 0) return RunContract();
     if (argc == 2 && wcscmp(argv[1], L"ocr-status") == 0) return techmap::captions::RunOcrStatus();
     if (argc >= 2 && wcscmp(argv[1], L"ocr-capture") == 0) {

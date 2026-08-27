@@ -25,6 +25,9 @@ enable_testing()
 add_test(NAME caption-probe-contract COMMAND techmap-captions contract)
 set_tests_properties(caption-probe-contract PROPERTIES PASS_REGULAR_EXPRESSION "\\\"contentEmitted\\\":false")
 
+add_test(NAME caption-direct-capture-rejected COMMAND techmap-captions ocr-capture --consent-confirmed --session-proof aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+set_tests_properties(caption-direct-capture-rejected PROPERTIES WILL_FAIL TRUE)
+
 add_executable(techmap-caption-tests
   tests/caption_tests.cpp
 )

@@ -1,6 +1,8 @@
 #include "ocr_runtime.h"
 
 #include "caption_geometry.h"
+#include "caption_frame.h"
+#include "caption_proof.h"
 #include "caption_rows.h"
 #include "caption_speaker.h"
 #include "caption_tsv.h"
@@ -255,7 +257,9 @@ bool VerifyCompanionProof(std::string_view expected) {
         Sleep(10);
     }
     DWORD extra = 0;
-    const bool noExtra = PeekNamedPipe(input, nullptr, 0, nullptr, &extra, nullptr) && extra == 0;
+    const BOOL peeked = PeekNamedPipe(input, nullptr, 0, nullptr, &extra, nullptr);
+    const DWORD peekError = peeked ? ERROR_SUCCESS : GetLastError();
+    const bool noExtra = ProofPipeHasNoTrailingBytes(peeked != FALSE, extra, peekError == ERROR_BROKEN_PIPE);
     unsigned char difference = 0;
     for (std::size_t index = 0; index < received.size(); ++index) difference |= received[index] ^ static_cast<unsigned char>(expected[index]);
     SecureZeroMemory(received.data(), received.size());
@@ -570,7 +574,11 @@ std::optional<std::vector<unsigned char>> CaptureSelectedBmpBounded(HWND window,
     bool failed = false;
     for (;;) {
         DWORD available = 0;
-        if (!PeekNamedPipe(parentOutput.get(), nullptr, 0, nullptr, &available, nullptr)) { failed = true; break; }
+        if (!PeekNamedPipe(parentOutput.get(), nullptr, 0, nullptr, &available, nullptr)) {
+            if (GetLastError() == ERROR_BROKEN_PIPE) break;
+            failed = true;
+            break;
+        }
         if (available > 0) {
             std::array<unsigned char, 64 * 1024> buffer{};
             DWORD read = 0;
@@ -695,13 +703,18 @@ TesseractResult RunTesseract(const OcrPaths& paths, std::vector<unsigned char>& 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(OcrTimeoutMilliseconds);
     bool timeout = false;
     bool oversized = false;
+    bool ioFailed = false;
     for (;;) {
         DWORD available = 0;
-        if (!PeekNamedPipe(parentOutput.get(), nullptr, 0, nullptr, &available, nullptr)) break;
+        if (!PeekNamedPipe(parentOutput.get(), nullptr, 0, nullptr, &available, nullptr)) {
+            if (GetLastError() == ERROR_BROKEN_PIPE) break;
+            ioFailed = true;
+            break;
+        }
         if (available > 0) {
             std::array<char, 16 * 1024> buffer{};
             DWORD read = 0;
-            if (!ReadFile(parentOutput.get(), buffer.data(), static_cast<DWORD>(std::min<std::size_t>(buffer.size(), available)), &read, nullptr)) break;
+            if (!ReadFile(parentOutput.get(), buffer.data(), static_cast<DWORD>(std::min<std::size_t>(buffer.size(), available)), &read, nullptr)) { ioFailed = true; break; }
             if (output.size() + read > MaximumOcrOutputBytes) { oversized = true; break; }
             output.append(buffer.data(), read);
             SecureZeroMemory(buffer.data(), buffer.size());
@@ -711,13 +724,13 @@ TesseractResult RunTesseract(const OcrPaths& paths, std::vector<unsigned char>& 
         if (std::chrono::steady_clock::now() >= deadline) { timeout = true; break; }
         Sleep(10);
     }
-    if (timeout || oversized) TerminateJobObject(job.get(), 2);
+    if (timeout || oversized || ioFailed) TerminateJobObject(job.get(), 2);
     WaitForSingleObject(process.get(), 1'000);
     writer.join();
     DWORD exitCode = 1;
     GetExitCodeProcess(process.get(), &exitCode);
     if (timeout) return TesseractResult::Timeout;
-    if (oversized || !writeOk || exitCode != 0 || output.empty()) return TesseractResult::Malformed;
+    if (oversized || ioFailed || !writeOk || exitCode != 0 || output.empty()) return TesseractResult::Malformed;
     return TesseractResult::Success;
 }
 
@@ -747,12 +760,7 @@ std::string JsonEscape(std::string_view value) {
 
 bool WriteFramedJson(std::string_view json) {
     if (json.empty() || json.size() > 64 * 1024) return false;
-    std::array<unsigned char, 12> header{{'T', 'M', 'O', '1', 1, 1, 0, 0, 0, 0, 0, 0}};
-    const auto size = static_cast<std::uint32_t>(json.size());
-    header[8] = static_cast<unsigned char>(size & 0xff);
-    header[9] = static_cast<unsigned char>((size >> 8) & 0xff);
-    header[10] = static_cast<unsigned char>((size >> 16) & 0xff);
-    header[11] = static_cast<unsigned char>((size >> 24) & 0xff);
+    const auto header = CaptionFrameHeader(1, static_cast<std::uint32_t>(json.size()));
     return std::fwrite(header.data(), 1, header.size(), stdout) == header.size() &&
         std::fwrite(json.data(), 1, json.size(), stdout) == json.size() && std::fflush(stdout) == 0;
 }

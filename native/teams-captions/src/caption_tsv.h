@@ -99,6 +99,7 @@ inline std::vector<ParsedCaptionLine> ParseTesseractTsv(std::string_view tsv) {
         auto& text = lines[index].text;
         const std::size_t required = text.size() + (text.empty() ? 0 : 1) + fields[11].size();
         if (required > MaximumCaptionTextBytes) {
+            std::fill(text.begin(), text.end(), '\0');
             text.clear();
             confidenceCounts[index] = -1;
             continue;
@@ -114,7 +115,11 @@ inline std::vector<ParsedCaptionLine> ParseTesseractTsv(std::string_view tsv) {
     for (std::size_t index = 0; index < lines.size(); ++index) {
         if (lines[index].text.empty() || confidenceCounts[index] <= 0) continue;
         lines[index].confidence = confidenceTotals[index] / confidenceCounts[index];
-        accepted.push_back(std::move(lines[index]));
+        accepted.push_back(lines[index]);
+    }
+    for (auto& line : lines) {
+        std::fill(line.text.begin(), line.text.end(), '\0');
+        line.text.clear();
     }
     return accepted;
 }

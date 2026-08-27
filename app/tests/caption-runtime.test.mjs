@@ -118,4 +118,15 @@ test('caption companion requires consent and forwards only validated framed even
   assert.equal(workers[1].killed, true);
   const stoppedEvents = await fetch(`${base}/v1/caption-sessions/${sessionId}/events?after=0`, { headers: { Origin: origin, Authorization: `Bearer ${token}` } });
   assert.deepEqual((await stoppedEvents.json()).events, []);
+
+  const immediateExit = await fetch(`${base}/v1/caption-sessions`, { method: 'POST', headers, body: JSON.stringify({ consentConfirmed: true }) });
+  assert.equal(immediateExit.status, 201);
+  const immediateId = (await immediateExit.json()).sessionId;
+  assert.equal(workers[2].stdin.listenerCount('error'), 1);
+  workers[2].stdin.emit('error', new Error('synthetic-epipe'));
+  assert.equal(workers[2].killed, true);
+  const immediateEvents = await fetch(`${base}/v1/caption-sessions/${immediateId}/events?after=0`, { headers: { Origin: origin, Authorization: `Bearer ${token}` } });
+  const immediateBody = await immediateEvents.json();
+  assert.equal(immediateBody.stopped, true);
+  assert.deepEqual(immediateBody.events, []);
 });

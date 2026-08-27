@@ -45,7 +45,7 @@ UIA/OCRは`awaiting-consent`から利用者の同意確認を経て`selecting-ta
 
 ## Local OCR runtime
 
-OCR adapterはWindowsローカルcompanionからだけ起動する。全参加者同意のcheckboxと開始buttonを経て、foregroundのTeams client areaに限定したoverlayで利用者が字幕矩形をdragするまでpixelを取得しない。helperは親processが`node.exe`で、stdin/stdoutがpipeであり、companionがcommand lineとstdinへ渡す同一の一回限り証明を2秒以内に検証できた場合だけ起動する。通常のterminal直接実行はcapture前に拒否する。
+OCR adapterはWindowsローカルcompanionからだけ起動する。全参加者同意のcheckboxと開始buttonを経て、foregroundのTeams client areaに限定したoverlayで利用者が字幕矩形をdragするまでpixelを取得しない。helperは親processが`node.exe`で、stdin/stdoutがpipeであり、companionがcommand lineとstdinへ渡す同一の一回限り証明を2秒以内に検証できた場合だけ起動する。証明64 byteを読み終えた正常なbroken-pipeは末尾byteなしとして受理し、それ以外のpipe errorと追加byteは拒否する。通常のterminal直接実行はcapture前に拒否する。
 
 - physical pixel矩形はTeams client bounds内に完全包含し、最大2,560 × 720、BGRA 8 MiBとする。共通部分だけへの暗黙cropはしない。
 - 各frameでvisible、foreground、非最小化、DPI不変、矩形の四隅・中央が同じ`ms-teams.exe` processに属することを確認する。外れた場合はpixelを取得せずdegradedへ遷移する。
@@ -57,7 +57,7 @@ OCR adapterはWindowsローカルcompanionからだけ起動する。全参加�
 - Tesseract confidence 85以上かつ同じspeaker/textを2 frame連続観測した場合だけobservationを送る。confidence不足、speaker/text分割不能、複数行の対応不明を推測で埋めない。
 - pauseとstopはcapture processを停止し、companionが未配信eventとparser bufferを破棄する。resumeはpaused sessionに一度だけ許可し、古い矩形を再利用せず、利用者が再選択する。
 
-Nativeからcompanionへは`TMO1` version 1、type 1のUTF-8 JSON frameだけを送る。eventは`state`、alias済み`observation`、`row-disappeared`、`tick`に限定し、画像、座標、寸法、PID、window title、raw display name、TSVを含めない。companionとbrowser adapterはexact-key schemaを再検証する。
+NativeからcompanionへはWindows CRTのbinary stdoutを使い、`TMO1` version 1、type 1のUTF-8 JSON frameだけを送る。frame workerのBMP stdoutもbinary modeとする。eventは`state`、alias済み`observation`、`row-disappeared`、`tick`に限定し、画像、座標、寸法、PID、window title、raw display name、TSVを含めない。companionとbrowser adapterはexact-key schemaを再検証する。proof stdinがworkerの早期終了で`EPIPE`になってもcompanion全体を終了させず、そのcaption sessionだけをfail closed停止する。
 
 ## Automated evidence
 
