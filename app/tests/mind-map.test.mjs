@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { analyzeWithDeterministicMock } from '../adapters/analysis/mock-analyzer.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState } from '../domain/analysis/contract.ts';
-import { advanceDegradedViewportTracking, applyHumanItemPatch, canCommitMapEdit, commitAnalysisHistory, createAnalysisHistory, degradedViewportFilterKey, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
+import { advanceDegradedViewportTracking, applyHumanItemPatch, canCommitMapEdit, commitAnalysisHistory, createAnalysisHistory, degradedViewportFilterKey, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, topAlignedScrollTargetForItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
 
 const utterances = Array.from({ length: 400 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
 const kinds = ['topic', 'claim', 'question', 'decision', 'action', 'dependency', 'risk'];
@@ -28,6 +28,7 @@ test('incremental layout preserves unrelated positions and supports 100 nodes', 
   updated.revision += 1;
   const second = reconcileMapLayout(first, updated);
   assert.deepEqual(second.positions, before);
+  assert.equal(second, first);
 });
 
 test('new nodes receive deterministic free slots without moving existing nodes', () => {
@@ -171,4 +172,15 @@ test('an edit draft can only commit to the item that opened the editor', () => {
   assert.equal(canCommitMapEdit('node-a', 'node-a'), true);
   assert.equal(canCommitMapEdit('node-a', 'node-b'), false);
   assert.equal(canCommitMapEdit('', 'node-a'), false);
+});
+
+test('explicit reframe returns a normal 100-node map to its top-left content', () => {
+  const state = stateWithNodes(100);
+  const layout = reconcileMapLayout(resetMapLayout(), state);
+  const target = topAlignedScrollTargetForItems(state.items.map((item) => item.id), layout, 1);
+  assert.deepEqual(target, { left: 36, top: 68 });
+  assert.ok(state.items.filter((item) => {
+    const position = layout.positions[item.id];
+    return position.y < target.top + 620 && position.y + mapNodeHeight > target.top;
+  }).length >= 2);
 });

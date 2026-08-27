@@ -76,6 +76,7 @@ export function applyHumanItemPatch(state: AnalysisState, itemId: string, patch:
 
 export function reconcileMapLayout(previous: MapLayout, state: AnalysisState): MapLayout {
   const positions = { ...previous.positions };
+  let changed = false;
   const occupied = new Set(Object.values(positions).map((position) => `${position.x}:${position.y}`));
   const laneSlots = [0, 0, 0];
   for (const position of Object.values(positions)) {
@@ -91,8 +92,9 @@ export function reconcileMapLayout(previous: MapLayout, state: AnalysisState): M
     laneSlots[lane] = slot + 1;
     positions[item.id] = position;
     occupied.add(`${position.x}:${position.y}`);
+    changed = true;
   }
-  return { positions };
+  return changed ? { positions } : previous;
 }
 
 export function resetMapLayout(): MapLayout {
@@ -172,4 +174,13 @@ export function scrollTargetForVisibleItems(viewport: MapViewport, itemIds: stri
   if (intersects) return { left: viewport.scrollLeft, top: viewport.scrollTop };
   const first = [...positions].sort((left, right) => left.y - right.y || left.x - right.x)[0];
   return { left: Math.max(0, Math.round(first.x * zoom - 24)), top: Math.max(0, Math.round(first.y * zoom - 24)) };
+}
+
+export function topAlignedScrollTargetForItems(itemIds: string[], layout: MapLayout, zoom: number, padding = 24): { left: number; top: number } | null {
+  const positions = itemIds.map((id) => layout.positions[id]).filter((position): position is MapPosition => Boolean(position));
+  if (positions.length === 0) return null;
+  return {
+    left: Math.max(0, Math.round(Math.min(...positions.map((position) => position.x)) * zoom - padding)),
+    top: Math.max(0, Math.round(Math.min(...positions.map((position) => position.y)) * zoom - padding)),
+  };
 }
