@@ -10,6 +10,7 @@ export type DegradedViewportTracking = { processedKey: string; trackedScroll: { 
 export type DegradedViewportDecision = { shouldEvaluate: boolean; next: DegradedViewportTracking };
 
 export const maximumHistoryEntries = 50;
+export const maximumHistoryBytes = 8 * 1024 * 1024;
 export const maximumRenderedNodes = 100;
 export const mapNodeWidth = 210;
 export const mapNodeHeight = 104;
@@ -18,6 +19,46 @@ const laneByKind: Record<AnalysisKind, number> = {
   question: 0, risk: 0, topic: 1, claim: 1, decision: 2, action: 2, dependency: 2,
 };
 const laneX = [60, 390, 720] as const;
+const stateByteEstimateCache = new WeakMap<AnalysisState, number>();
+
+export function analysisStateByteEstimate(state: AnalysisState): number {
+  const cached = stateByteEstimateCache.get(state);
+  if (cached !== undefined) return cached;
+  let characters = 96 + state.appliedDeltas.reduce((total, item) => total + item.deltaId.length + item.model.length + item.promptHash.length + item.schemaHash.length + 32, 0);
+  for (const item of state.items) {
+    characters += item.id.length + item.title.length + item.detail.length + item.kind.length + item.status.length + item.provenance.length + 96;
+    characters += item.evidenceUtteranceIds.reduce((total, id) => total + id.length + 4, 0);
+    characters += item.links.reduce((total, link) => total + link.targetId.length + link.relation.length + 16, 0);
+  }
+  const bytes = characters * 2;
+  stateByteEstimateCache.set(state, bytes);
+  return bytes;
+}
+
+function trimPast(entries: AnalysisState[]): AnalysisState[] {
+  const kept: AnalysisState[] = [];
+  let bytes = 0;
+  for (let index = entries.length - 1; index >= 0 && kept.length < maximumHistoryEntries; index -= 1) {
+    const entryBytes = analysisStateByteEstimate(entries[index]);
+    if (bytes + entryBytes > maximumHistoryBytes) break;
+    kept.unshift(entries[index]);
+    bytes += entryBytes;
+  }
+  return kept;
+}
+
+function trimFuture(entries: AnalysisState[]): AnalysisState[] {
+  const kept: AnalysisState[] = [];
+  let bytes = 0;
+  for (const entry of entries) {
+    if (kept.length >= maximumHistoryEntries) break;
+    const entryBytes = analysisStateByteEstimate(entry);
+    if (bytes + entryBytes > maximumHistoryBytes) break;
+    kept.push(entry);
+    bytes += entryBytes;
+  }
+  return kept;
+}
 
 export function createAnalysisHistory(initial: AnalysisState): AnalysisHistory {
   return { past: [], present: structuredClone(initial), future: [] };
@@ -25,8 +66,8 @@ export function createAnalysisHistory(initial: AnalysisState): AnalysisHistory {
 
 export function commitAnalysisHistory(history: AnalysisHistory, next: AnalysisState, reset = false): AnalysisHistory {
   if (reset) return createAnalysisHistory(next);
-  if (next === history.present || JSON.stringify(next) === JSON.stringify(history.present)) return history;
-  return { past: [...history.past, structuredClone(history.present)].slice(-maximumHistoryEntries), present: structuredClone(next), future: [] };
+  if (next === history.present || next.revision === history.present.revision) return history;
+  return { past: trimPast([...history.past, structuredClone(history.present)]), present: structuredClone(next), future: [] };
 }
 
 function restoredState(current: AnalysisState, target: AnalysisState, utterances: TranscriptUtterance[], preserveRemovedAiEvidence = false): AnalysisState {
@@ -47,7 +88,7 @@ export function undoAnalysisHistory(history: AnalysisHistory, utterances: Transc
   return {
     past: history.past.slice(0, -1),
     present: restoredState(history.present, target, utterances, true),
-    future: [structuredClone(history.present), ...history.future].slice(0, maximumHistoryEntries),
+    future: trimFuture([structuredClone(history.present), ...history.future]),
   };
 }
 
@@ -55,7 +96,7 @@ export function redoAnalysisHistory(history: AnalysisHistory, utterances: Transc
   const target = history.future[0];
   if (!target) return history;
   return {
-    past: [...history.past, structuredClone(history.present)].slice(-maximumHistoryEntries),
+    past: trimPast([...history.past, structuredClone(history.present)]),
     present: restoredState(history.present, target, utterances),
     future: history.future.slice(1),
   };
@@ -69,7 +110,7 @@ export function applyHumanItemPatch(state: AnalysisState, itemId: string, patch:
   const detail = patch.detail?.trim();
   const edited = (title !== undefined && title !== item.title) || (detail !== undefined && detail !== item.detail) || (patch.status !== undefined && patch.status !== item.status);
   const confirmed = patch.confirm === true && item.provenance === 'ai-suggested';
-  if (!edited && !confirmed) return structuredClone(state);
+  if (!edited && !confirmed) return state;
   if (title !== undefined) item.title = title;
   if (detail !== undefined) item.detail = detail;
   if (patch.status !== undefined) item.status = patch.status;

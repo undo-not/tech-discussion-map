@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { analyzeWithDeterministicMock } from '../adapters/analysis/mock-analyzer.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState } from '../domain/analysis/contract.ts';
-import { advanceDegradedViewportTracking, applyHumanItemPatch, canCommitMapEdit, commitAnalysisHistory, createAnalysisHistory, degradedViewportFilterKey, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, topAlignedScrollTargetForItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
+import { advanceDegradedViewportTracking, analysisStateByteEstimate, applyHumanItemPatch, canCommitMapEdit, commitAnalysisHistory, createAnalysisHistory, degradedViewportFilterKey, latestRenderedMapItems, mapNodeHeight, maximumHistoryBytes, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, topAlignedScrollTargetForItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
 
 const utterances = Array.from({ length: 400 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
 const kinds = ['topic', 'claim', 'question', 'decision', 'action', 'dependency', 'risk'];
@@ -90,7 +90,7 @@ test('human patches retain validator boundaries and session reset clears history
   const state = stateWithNodes(1);
   assert.throws(() => applyHumanItemPatch(state, 'map-node-0', { title: '   ' }, utterances), /analysis-invalid-item/);
   assert.throws(() => applyHumanItemPatch(state, 'missing-node', { confirm: true }, utterances), /mind-map-unknown-item/);
-  assert.equal(applyHumanItemPatch(state, 'map-node-0', { title: state.items[0].title, detail: state.items[0].detail }, utterances).revision, state.revision);
+  assert.equal(applyHumanItemPatch(state, 'map-node-0', { title: state.items[0].title, detail: state.items[0].detail }, utterances), state);
 
   let history = createAnalysisHistory(state);
   for (let index = 0; index < maximumHistoryEntries + 5; index += 1) {
@@ -102,6 +102,21 @@ test('human patches retain validator boundaries and session reset clears history
   assert.equal(reset.future.length, 0);
   assert.deepEqual(reset.present, emptyAnalysisState);
   assert.deepEqual(resetMapLayout(), { positions: {} });
+});
+
+test('large workspace history is bounded by both entry count and estimated bytes', () => {
+  let state = stateWithNodes(300);
+  state.items.forEach((item) => { item.detail = 'x'.repeat(600); });
+  state = validateAnalysisState(state, utterances);
+  let history = createAnalysisHistory(state);
+  for (let index = 0; index < maximumHistoryEntries + 5; index += 1) {
+    const next = structuredClone(history.present);
+    next.revision += 1;
+    next.items[0].title = `large history ${index}`;
+    history = commitAnalysisHistory(history, validateAnalysisState(next, utterances));
+  }
+  assert.ok(history.past.length < maximumHistoryEntries);
+  assert.ok(history.past.reduce((total, entry) => total + analysisStateByteEstimate(entry), 0) <= maximumHistoryBytes);
 });
 
 test('confirmed mock item is not duplicated and remains protected from later AI updates', () => {

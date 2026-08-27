@@ -204,6 +204,10 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         setAnalysisStatus('分析中に手動編集またはundoが行われたため、古い分析結果を破棄しました。「分析を更新」で再実行できます。');
         return;
       }
+      if (error instanceof Error && error.message === 'analysis-withdrawn-evidence-replay') {
+        setAnalysisStatus('元に戻したAI itemと同じ根拠だけからの再追加を拒否しました。local workspaceは変更していません。');
+        return;
+      }
       setAnalysisStatus('分析を適用できませんでした。local workspaceは変更せず、mock／手動整理を継続できます。');
     });
   };

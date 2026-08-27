@@ -21,10 +21,14 @@ function titleFor(text: string): string {
   return text.trim().replace(/\s+/g, ' ').slice(0, 80);
 }
 
-function tempIdFor(id: string): string {
+function hashFor(value: string): string {
   let hash = 2_166_136_261;
-  for (const character of id) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16_777_619); }
-  return `u_${(hash >>> 0).toString(16).padStart(8, '0')}_${id.slice(-41)}`;
+  for (const character of value) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16_777_619); }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function tempIdFor(id: string): string {
+  return `u_${hashFor(id)}_${id.slice(-41)}`;
 }
 
 export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], state: AnalysisState): AnalysisDelta {
@@ -67,7 +71,7 @@ export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], 
   return {
     contractVersion: 1,
     baseRevision: state.revision,
-    deltaId: `mock_${state.revision}_${finals.map((item) => item.id).join('_')}`.slice(0, 80),
+    deltaId: `mock_${state.revision}_${hashFor(finals.map((item) => item.id).join('\0'))}`,
     model: 'deterministic-mock-v1', promptHash: analysisPromptHash, schemaHash: analysisSchemaHash, operations,
   };
 }

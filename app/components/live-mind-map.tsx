@@ -214,7 +214,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
         </div>
       </div>
 
-      {degraded && <p role="status" className="z-20 bg-[#fff4d9] px-3 py-2 text-xs font-semibold text-[#76551f]">大規模会議の縮退表示: 最新の{maximumRenderedNodes} nodeを表示中。検索・filterで対象を絞ってください。</p>}
+      {degraded && <p className="z-20 bg-[#fff4d9] px-3 py-2 text-xs font-semibold text-[#76551f]">大規模会議の縮退表示: 選択対象と最新nodeを合わせて最大{maximumRenderedNodes}件表示中。検索・filterで対象を絞ってください。</p>}
       {operationStatus && <p role="status" aria-live="polite" className="z-20 border-b border-[#d2dad4] bg-white px-3 py-1.5 text-xs text-[#52615c]">{operationStatus}</p>}
       <div ref={viewportRef} role="region" tabIndex={0} className="mindmap-grid relative flex-1 overflow-auto" aria-label="マップviewport">
         <div className="relative origin-top-left transition-transform" style={{ width: 1_000, height: canvasHeight, transform: `scale(${zoom})` }}>

@@ -66,6 +66,18 @@ export default function Home() {
     counts[item.kind] = (counts[item.kind] ?? 0) + 1;
     return counts;
   }, {});
+  const nodeByEvidence = new Map<string, AnalysisState['items'][number]>();
+  for (const item of analysisHistory.present.items) for (const utteranceId of item.evidenceUtteranceIds) nodeByEvidence.set(utteranceId, item);
+  const nodeForEvidence = (utteranceId: string) => nodeByEvidence.get(utteranceId);
+
+  const announceMapSelection = useCallback((itemId: string) => {
+    setSelectedNode(itemId);
+    const item = analysisHistoryRef.current.present.items.find((candidate) => candidate.id === itemId);
+    if (!item) { setMapOperationStatus('選択nodeは現在のworkspaceに存在しません。'); return; }
+    setMapOperationStatus(['withdrawn', 'superseded'].includes(item.status)
+      ? `「${item.title}」は撤回・統合済みの履歴nodeとして表示しています。`
+      : `選択中: 「${item.title}」`);
+  }, []);
 
   const selectNode = (itemId: string | undefined, utteranceIds: string[]) => {
     const nextSequence = focusSequence + 1;
@@ -74,7 +86,9 @@ export default function Home() {
     const target = itemId ? analysisHistory.present.items.find((item) => item.id === itemId) : [...analysisHistory.present.items].reverse().find((item) => utteranceIds.some((id) => item.evidenceUtteranceIds.includes(id)));
     if (target) {
       setSelectedNode(target.id);
-      setMapOperationStatus(`「${target.title}」をマップで表示しました。`);
+      setMapOperationStatus(['withdrawn', 'superseded'].includes(target.status)
+        ? `「${target.title}」は撤回・統合済みの履歴nodeとして表示します。`
+        : `「${target.title}」をマップで表示します。`);
     } else setMapOperationStatus('この発話に対応する分析nodeはまだありません。「分析を更新」を実行してください。');
   };
 
@@ -107,7 +121,7 @@ export default function Home() {
               <article key={`${item.id}-${item.revision}`} className={`group rounded-xl p-3 ${analysisHistory.present.items.some((node) => node.id === selectedNode && node.evidenceUtteranceIds.includes(item.id)) ? 'bg-[#eaf2ed]' : 'hover:bg-[#f0f3ef]'}`}>
                 <div className="mb-2 flex items-center gap-2"><span aria-hidden="true" className="avatar avatar-mint">{item.speaker === 'self' ? '自' : '相'}</span><span className="text-xs font-semibold">{item.speaker === 'self' ? '自分' : item.source === 'synthetic' ? '合成デモ' : '相手側'}</span><time className="ml-auto text-xs text-[#5c6a66]">{Math.floor(item.startMs / 60_000).toString().padStart(2, '0')}:{Math.floor((item.startMs % 60_000) / 1_000).toString().padStart(2, '0')}</time></div>
                 <p className="text-[13px] leading-6 text-[#46534f]">{item.text}</p>
-                {item.phase === 'partial' ? <span className="mt-2 block text-xs text-[#76551f]">認識中</span> : <button onClick={() => selectNode(undefined, [item.id])} className="mt-2 text-xs font-semibold text-[#276758] opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100">対応nodeを表示 →</button>}
+                {item.phase === 'partial' ? <span className="mt-2 block text-xs text-[#76551f]">認識中</span> : <button onClick={() => selectNode(undefined, [item.id])} className="mt-2 text-xs font-semibold text-[#276758] opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100">{nodeForEvidence(item.id)?.status === 'withdrawn' ? '撤回済みnodeを表示 →' : '対応nodeを表示 →'}</button>}
               </article>
             ))}
             {filteredTranscript.length === 0 && <p className="p-4 text-center text-xs text-[#5c6a66]">一致する発話はありません</p>}
@@ -116,7 +130,7 @@ export default function Home() {
           <div className="border-t border-[#e2e5e0] p-3"><div className="flex items-center justify-between rounded-xl bg-[#eef3ef] px-3 py-2.5"><span className="text-xs font-medium text-[#4b5c57]">入力：capture panel</span><span className="text-xs text-[#5c6a66]">生音声は保存されません</span></div></div>
         </aside>
 
-        <LiveMindMap key={mapSessionGeneration} analysisState={analysisHistory.present} focusRequest={focusRequest} canUndo={analysisHistory.past.length > 0} canRedo={analysisHistory.future.length > 0} onUndo={undoMap} onRedo={redoMap} onPatchItem={patchMapItem} onSelectionChange={setSelectedNode} operationStatus={mapOperationStatus} />
+        <LiveMindMap key={mapSessionGeneration} analysisState={analysisHistory.present} focusRequest={focusRequest} canUndo={analysisHistory.past.length > 0} canRedo={analysisHistory.future.length > 0} onUndo={undoMap} onRedo={redoMap} onPatchItem={patchMapItem} onSelectionChange={announceMapSelection} operationStatus={mapOperationStatus} />
 
         <aside className="flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-[#d9ded8] bg-[#fbfaf7] shadow-[0_8px_30px_rgba(35,54,49,0.05)] xl:min-h-0">
           <div className="border-b border-[#e2e5e0] px-4 py-3"><h2 className="text-sm font-semibold">会議インサイト</h2><p className="mt-0.5 text-xs text-[#5c6a66]">重要な変化を自動検出</p></div>

@@ -41,6 +41,18 @@ test('invalid operation, stale revision, broken evidence, and human overwrite fa
   assert.deepEqual(state, before);
 });
 
+test('withdrawn AI evidence cannot be replayed by a later OpenAI-style add', () => {
+  const tombstone = validateAnalysisState({
+    contractVersion: 1, revision: 0, appliedDeltas: [],
+    items: [{ id: 'withdrawn_item', kind: 'topic', title: '元に戻した提案', detail: '撤回済みの合成詳細', status: 'withdrawn', confidence: 0.8, provenance: 'ai-suggested', evidenceUtteranceIds: ['eval-u1'], links: [] }],
+  }, evaluation.utterances);
+  const replay = { contractVersion: 1, baseRevision: 0, operations: [{ op: 'add', tempId: 'replay', kind: 'topic', title: '復活した提案', detail: '同じ根拠だけを利用', status: 'open', confidence: 0.8, evidenceUtteranceIds: ['eval-u1'] }] };
+  assert.throws(() => applyAnalysisDelta(tombstone, { ...replay, ...metadata('withdrawnreplay') }, evaluation.utterances), /withdrawn-evidence-replay/);
+  const revisited = structuredClone(replay);
+  revisited.operations[0].evidenceUtteranceIds.push('eval-u2');
+  assert.doesNotThrow(() => applyAnalysisDelta(tombstone, { ...revisited, ...metadata('withdrawnnew') }, evaluation.utterances));
+});
+
 test('delta application is idempotent and mock analyzer is deterministic', () => {
   const delta = { ...evaluation.outputs[0], ...metadata('idempotent') };
   const once = applyAnalysisDelta(emptyAnalysisState, delta, evaluation.utterances);
