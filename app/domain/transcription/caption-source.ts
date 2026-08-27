@@ -24,6 +24,7 @@ export type SafeCaptionObservation = {
   observedAtMs: number;
   text: string;
   confidence?: number;
+  stableSamples?: number;
 };
 
 type CaptionRow = {
@@ -52,6 +53,7 @@ const safeSpeakerAlias = /^speaker-[1-9][0-9]{0,2}$/;
 const maximumRows = 256;
 const maximumCaptionRevision = Math.floor((Number.MAX_SAFE_INTEGER - 1) / 2);
 export const minimumOcrConfidence = 85;
+export const minimumOcrStableSamples = 2;
 export const captionSettleMilliseconds = 1_200;
 
 export const emptyCaptionAssemblerState: CaptionAssemblerState = { sourceState: 'idle', rows: [] };
@@ -62,8 +64,11 @@ function parseSafeCaptionObservation(value: unknown): SafeCaptionObservation {
   const source = item.source as CaptionObservationSource;
   const speaker = item.speaker as SafeCaptionObservation['speaker'];
   const confidenceIsValid = source === 'teams-ocr'
-    ? Number.isInteger(item.confidence) && (item.confidence as number) >= 0 && (item.confidence as number) <= 100
+    ? item.confidence === undefined || (Number.isInteger(item.confidence) && (item.confidence as number) >= 0 && (item.confidence as number) <= 100)
     : item.confidence === undefined;
+  const stableSamplesIsValid = source === 'teams-ocr'
+    ? item.stableSamples === undefined || (Number.isInteger(item.stableSamples) && (item.stableSamples as number) >= 1 && (item.stableSamples as number) <= 10)
+    : item.stableSamples === undefined;
   const aliasIsValid = speaker === 'displayed-alias'
     ? typeof item.speakerAlias === 'string' && safeSpeakerAlias.test(item.speakerAlias)
     : item.speakerAlias === undefined;
@@ -75,7 +80,7 @@ function parseSafeCaptionObservation(value: unknown): SafeCaptionObservation {
     !aliasIsValid ||
     !Number.isSafeInteger(item.observedAtMs) || (item.observedAtMs as number) < 0 ||
     typeof item.text !== 'string' || item.text.trim().length === 0 || item.text.length > 8_000 ||
-    !confidenceIsValid
+    !confidenceIsValid || !stableSamplesIsValid
   ) {
     throw new Error('invalid-caption-observation');
   }
@@ -88,6 +93,7 @@ function parseSafeCaptionObservation(value: unknown): SafeCaptionObservation {
     observedAtMs: item.observedAtMs as number,
     text: item.text.trim(),
     ...(typeof item.confidence === 'number' ? { confidence: item.confidence } : {}),
+    ...(typeof item.stableSamples === 'number' ? { stableSamples: item.stableSamples } : {}),
   };
 }
 
@@ -121,7 +127,10 @@ export function applyCaptionSourceEvent(
 ): CaptionAssemblerResult {
   if (event.type === 'observation') {
     const incoming = parseSafeCaptionObservation(event.observation);
-    if (incoming.source === 'teams-ocr' && (incoming.confidence as number) < minimumOcrConfidence) {
+    const ocrQualityAccepted = incoming.source !== 'teams-ocr' ||
+      (typeof incoming.confidence === 'number' && incoming.confidence >= minimumOcrConfidence) ||
+      (typeof incoming.stableSamples === 'number' && incoming.stableSamples >= minimumOcrStableSamples);
+    if (!ocrQualityAccepted) {
       return { state: { ...current, sourceState: 'degraded-low-confidence' }, utterances: [] };
     }
     const existing = current.rows.find((row) => row.observation.rowId === incoming.rowId);

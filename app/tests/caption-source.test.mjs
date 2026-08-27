@@ -62,6 +62,21 @@ test('low-confidence OCR fails closed without emitting meeting text', () => {
   assert.deepEqual(result.utterances, []);
 });
 
+test('OCR engines without confidence require two identical stable samples', () => {
+  const unstable = applyCaptionSourceEvent(emptyCaptionAssemblerState, {
+    type: 'observation',
+    observation: { ...observation, source: 'teams-ocr', stableSamples: 1 },
+  });
+  assert.equal(unstable.state.sourceState, 'degraded-low-confidence');
+  assert.deepEqual(unstable.utterances, []);
+  const stable = applyCaptionSourceEvent(emptyCaptionAssemblerState, {
+    type: 'observation',
+    observation: { ...observation, source: 'teams-ocr', stableSamples: 2 },
+  });
+  assert.equal(stable.state.sourceState, 'active-ocr');
+  assert.equal(stable.utterances[0].text, observation.text);
+});
+
 test('only bounded aliases cross the caption domain boundary', () => {
   assert.throws(() => applyCaptionSourceEvent(emptyCaptionAssemblerState, {
     type: 'observation',

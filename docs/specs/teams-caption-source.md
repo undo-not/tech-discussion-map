@@ -23,7 +23,10 @@ UIA/OCR adapterはraw participant display nameを渡さず、session-only alias�
 - `speakerAlias`: `displayed-alias`の場合だけ`speaker-1`から`speaker-999`。
 - `observedAtMs`: session開始からの単調時刻。
 - `text`: 1文字以上8,000文字以下。
-- `confidence`: OCRだけ0から100の整数。85未満は発話を生成しない。
+- `confidence`: confidenceを提供するOCR engineだけ0から100の整数。85以上を受け入れる。
+- `stableSamples`: confidenceを提供しないOCR engineだけ、同一speaker/textを連続観測した回数。2回以上を受け入れる。
+
+OCR observationは`confidence >= 85`または`stableSamples >= 2`のどちらかを満たす場合だけ発話を生成する。`Windows.Media.Ocr`の公開結果にはconfidenceがないため、採用する場合は後者を使う。
 
 最初の観測とrewriteはpartialを生成する。1,200 ms更新がない、または行消失を観測したときfinalを生成する。確定後により高いrevisionが届いた場合はcorrected finalとして明示的に生成し、既存のtranscript contractが分析訂正eventとして保持する。同一以下のrevisionは無視する。
 
@@ -48,7 +51,7 @@ OCR adapterはまだ有効化しない。実装時は次を満たす。
 - Teams windowが最小化、遮蔽、移動、DPI変更、対象外processになった場合はcaptureせずdegradedへ遷移する。
 - bitmap、OCR intermediate、raw speaker display nameをfile、clipboard、log、networkへ出さない。
 - 日本語language packのavailabilityを開始前に検出し、自動downloadしない。
-- confidence不足、speaker/text分割不能、複数行の対応不明を推測で埋めない。
+- confidence／連続安定性不足、speaker/text分割不能、複数行の対応不明を推測で埋めない。
 
 ## Automated evidence
 
