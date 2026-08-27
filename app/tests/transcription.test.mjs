@@ -40,6 +40,13 @@ test('session requires an explicit start before permission and engine transition
   state = transitionTranscriptionSession(state, { type: 'started' });
   assert.equal(state, 'listening');
   assert.equal(transitionTranscriptionSession('idle', { type: 'demo-started' }), 'listening');
+  for (const failed of ['permission-denied', 'device-unavailable', 'engine-unavailable']) {
+    let retry = transitionTranscriptionSession(failed, { type: 'start-requested' });
+    assert.equal(retry, 'requesting-permission');
+    retry = transitionTranscriptionSession(retry, { type: 'permission-granted' });
+    retry = transitionTranscriptionSession(retry, { type: 'started' });
+    assert.equal(retry, 'listening');
+  }
 });
 
 test('Teams PCM downmixes and decimates to the shared 16 kHz transcription port', () => {

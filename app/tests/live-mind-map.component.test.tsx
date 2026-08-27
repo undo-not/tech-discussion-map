@@ -55,6 +55,18 @@ describe('LiveMindMap DOM integration', () => {
     expect(screen.getByLabelText(/合成node 2/).getAttribute('aria-current')).toBe('true');
   });
 
+  test('node and live detail expose type, status, provenance, and evidence', () => {
+    render(<LiveMindMap {...baseProps} analysisState={stateWithNodes(3)} />);
+    flushFrames();
+    const node = screen.getByRole('button', { name: /論点 合成node 0、状態 open、AI提案、根拠 component-u0/ });
+    fireEvent.click(node);
+    const detail = screen.getByLabelText('選択nodeの詳細');
+    expect(detail.textContent).toContain('種類 論点');
+    expect(detail.textContent).toContain('状態 open');
+    expect(detail.textContent).toContain('出所 AI提案');
+    expect(detail.textContent).toContain('根拠 component-u0');
+  });
+
   test('the explicit top command reframes a normal 100-node map', () => {
     render(<LiveMindMap {...baseProps} analysisState={stateWithNodes(100)} />);
     flushFrames();

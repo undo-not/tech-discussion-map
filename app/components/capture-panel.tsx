@@ -93,6 +93,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setTranscript(state);
     onTranscriptChange?.(state);
   };
+  const hasActiveInput = () => Boolean(microphone.current || localClient.current || captionClient.current || synthetic.current);
 
   useEffect(() => { saveLocallyRef.current = saveLocally; }, [saveLocally]);
   useEffect(() => { retentionDaysRef.current = retentionDays; }, [retentionDays]);
@@ -272,6 +273,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   };
 
   const startCaptionOcr = async () => {
+    if (hasActiveInput()) { setMessage('別の入力が動作中です。先に終了してからTeams字幕OCRを開始してください。'); return; }
     if (!localRuntime || !consentConfirmed) {
       setMessage(!localRuntime ? '公開UIではTeams画面を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
       return;
@@ -327,6 +329,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   };
 
   const startLocal = async () => {
+    if (hasActiveInput()) { setMessage('別の入力が動作中です。先に終了してからマイクを開始してください。'); return; }
     if (!localRuntime || !consentConfirmed) {
       setMessage(!localRuntime ? '公開UIでは実音声を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
       return;
@@ -360,6 +363,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       const client = new LocalCompanionTranscriptionClient('local', receive);
       client.onFailure = () => {
         void microphone.current?.stop(); microphone.current = null;
+        localClient.current = null;
         setInputMode('none');
         dispatch({ type: 'engine-unavailable' });
         setMessage('ローカル音声認識が停止し、以後の音声は取得されません。合成デモへ切り替えられます。');
@@ -386,6 +390,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   };
 
   const startDemo = () => {
+    if (hasActiveInput()) { setMessage('別の入力が動作中です。先に終了してから合成デモを開始してください。'); return; }
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     demoModeRef.current = true;

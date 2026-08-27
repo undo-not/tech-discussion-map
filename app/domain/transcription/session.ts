@@ -32,7 +32,9 @@ export function transitionTranscriptionSession(
     case 'demo-started':
       return current === 'idle' || current === 'stopped' || current === 'engine-unavailable' || current === 'permission-denied' || current === 'device-unavailable' ? 'listening' : current;
     case 'start-requested':
-      return current === 'idle' || current === 'stopped' ? 'requesting-permission' : current;
+      return current === 'idle' || current === 'stopped' || current === 'engine-unavailable' || current === 'permission-denied' || current === 'device-unavailable'
+        ? 'requesting-permission'
+        : current;
     case 'permission-granted':
       return current === 'requesting-permission' ? 'starting-local-engine' : current;
     case 'started':
