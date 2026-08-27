@@ -8,9 +8,9 @@
 - process/window/UIA root counts;
 - `contentInspected: false`, `contentEmitted: false`, `contentPersisted: false`.
 
-window title、PID、Automation `Name`、`Value`、`TextPattern`、座標、文字列hashは返さず、UIA subtreeを走査しない。`candidate-found`は字幕取得成功ではなく、TeamsのUIA root候補が見つかったことだけを意味する。companionへ接続する際はhelper process自体へ5秒のtimeoutを設け、providerが応答しない場合はhelperを終了して`degraded-caption-missing`とする。
+window title、PID、Automation `Name`、`Value`、`TextPattern`、座標、文字列hashは返さず、UIA subtreeを走査しない。`candidate-found`は字幕取得成功ではなく、TeamsのUIA root候補が見つかったことだけを意味する。すべてのUIA callはstdoutを持たない使い捨てworker process内で実行し、親processが5秒で強制終了して固定の`probe-timeout` metadataだけを返す。companionはこれを`degraded-caption-missing`として扱う。
 
-`probe-at-cursor --consent-confirmed`は利用者が現在指している1要素だけを調べる。対象process imageが`ms-teams.exe`でない場合は失敗する。文字列はmemory内で有無と上限内かを確認して消去し、内容、正確な長さ、hashをstdout/stderr/fileへ出さない。これは本人のみの合成テスト会議または全参加者が同意したテストでのみ実行する。
+`probe-at-cursor --consent-confirmed`は利用者が現在指している1要素だけを調べる。対象process imageが`ms-teams.exe`でない場合は失敗する。文字列はworker memory内で有無と上限内かを確認して消去し、親processへはexit codeのbit flagだけを返す。内容、正確な長さ、hashをstdout/stderr/fileへ出さない。workerが応答しない場合も5秒で終了する。これは本人のみの合成テスト会議または全参加者が同意したテストでのみ実行する。
 
 ## Caption event contract
 

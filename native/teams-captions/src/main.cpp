@@ -19,6 +19,15 @@ namespace {
 
 constexpr std::wstring_view TeamsExecutableName = L"ms-teams.exe";
 constexpr int MaximumSensitiveCharacters = 8'000;
+constexpr DWORD ProbeTimeoutMilliseconds = 5'000;
+constexpr DWORD ProbeCandidate = 0;
+constexpr DWORD ProbeTeamsNotFound = 10;
+constexpr DWORD ProbeWindowNotFound = 11;
+constexpr DWORD ProbeUiaUnavailable = 12;
+constexpr DWORD CursorUnavailable = 20;
+constexpr DWORD CursorElementUnavailable = 21;
+constexpr DWORD CursorTeamsElementRequired = 22;
+constexpr DWORD CursorSuccessBase = 64;
 
 class UniqueHandle final {
 public:
@@ -85,30 +94,19 @@ int RunContract() {
         "\"contentEmitted\":false,\"contentPersisted\":false}\n") ? 0 : 3;
 }
 
-int RunProbe(IUIAutomation* automation) {
+DWORD RunProbeWorker(IUIAutomation* automation) {
     const auto processIds = FindTeamsProcesses();
+    if (processIds.empty()) return ProbeTeamsNotFound;
     std::vector<HWND> windows;
     WindowContext context{&processIds, &windows};
     EnumWindows(CollectTeamsWindows, reinterpret_cast<LPARAM>(&context));
+    if (windows.empty()) return ProbeWindowNotFound;
 
-    std::size_t roots = 0;
     for (HWND window : windows) {
         ComPtr<IUIAutomationElement> root;
-        if (SUCCEEDED(automation->ElementFromHandle(window, &root)) && root) ++roots;
+        if (SUCCEEDED(automation->ElementFromHandle(window, &root)) && root) return ProbeCandidate;
     }
-
-    const char* state = processIds.empty() ? "teams-not-found"
-        : windows.empty() ? "teams-window-not-found"
-        : roots == 0 ? "uia-unavailable"
-        : "candidate-found";
-    std::ostringstream json;
-    json << "{\"contractVersion\":1,\"state\":\"" << state
-         << "\",\"teamsProcessCount\":" << processIds.size()
-         << ",\"teamsWindowCount\":" << windows.size()
-         << ",\"uiaRootCount\":" << roots
-         << ",\"contentInspected\":false,\"contentEmitted\":false,\"contentPersisted\":false}\n";
-    if (!WriteText(json.str())) return 3;
-    return std::string_view(state) == "candidate-found" ? 0 : 2;
+    return ProbeUiaUnavailable;
 }
 
 std::size_t SecureLengthAndFree(BSTR value) {
@@ -119,25 +117,14 @@ std::size_t SecureLengthAndFree(BSTR value) {
     return length;
 }
 
-int RunProbeAtCursor(IUIAutomation* automation, bool consentConfirmed) {
-    if (!consentConfirmed) {
-        WriteText("{\"contractVersion\":1,\"state\":\"consent-required\",\"contentEmitted\":false,\"contentPersisted\":false}\n");
-        return 2;
-    }
+DWORD RunProbeAtCursorWorker(IUIAutomation* automation) {
     POINT point{};
-    if (!GetCursorPos(&point)) {
-        WriteText("{\"contractVersion\":1,\"state\":\"cursor-unavailable\",\"contentEmitted\":false,\"contentPersisted\":false}\n");
-        return 2;
-    }
+    if (!GetCursorPos(&point)) return CursorUnavailable;
     ComPtr<IUIAutomationElement> element;
-    if (FAILED(automation->ElementFromPoint(point, &element)) || !element) {
-        WriteText("{\"contractVersion\":1,\"state\":\"element-unavailable\",\"contentEmitted\":false,\"contentPersisted\":false}\n");
-        return 2;
-    }
+    if (FAILED(automation->ElementFromPoint(point, &element)) || !element) return CursorElementUnavailable;
     int processId = 0;
     if (FAILED(element->get_CurrentProcessId(&processId)) || processId <= 0 || !IsExpectedTeamsProcess(static_cast<DWORD>(processId))) {
-        WriteText("{\"contractVersion\":1,\"state\":\"teams-element-required\",\"contentEmitted\":false,\"contentPersisted\":false}\n");
-        return 2;
+        return CursorTeamsElementRequired;
     }
 
     CONTROLTYPEID controlType = 0;
@@ -160,16 +147,79 @@ int RunProbeAtCursor(IUIAutomation* automation, bool consentConfirmed) {
         }
     }
 
+    DWORD flags = 0;
+    if (nameCharacters > 0) flags |= 1;
+    if (nameCharacters <= static_cast<std::size_t>(MaximumSensitiveCharacters)) flags |= 2;
+    if (controlType == UIA_TextControlTypeId) flags |= 4;
+    if (textPatternAvailable) flags |= 8;
+    if (textCharacters > 0) flags |= 16;
+    if (textCharacters <= static_cast<std::size_t>(MaximumSensitiveCharacters)) flags |= 32;
+    return CursorSuccessBase | flags;
+}
+
+int EmitSimpleState(std::string_view state, bool contentInspected = false) {
+    std::string json = "{\"contractVersion\":1,\"state\":\"";
+    json += state;
+    json += "\",\"contentInspected\":";
+    json += contentInspected ? "true" : "false";
+    json += ",\"contentEmitted\":false,\"contentPersisted\":false}\n";
+    return WriteText(json) ? 0 : 3;
+}
+
+int EmitWorkerResult(DWORD result, bool cursorProbe) {
+    if (!cursorProbe) {
+        if (result == ProbeCandidate) return EmitSimpleState("candidate-found");
+        if (result == ProbeTeamsNotFound) return EmitSimpleState("teams-not-found") == 0 ? 2 : 3;
+        if (result == ProbeWindowNotFound) return EmitSimpleState("teams-window-not-found") == 0 ? 2 : 3;
+        return EmitSimpleState("uia-unavailable") == 0 ? 2 : 3;
+    }
+    if (result == CursorUnavailable) return EmitSimpleState("cursor-unavailable") == 0 ? 2 : 3;
+    if (result == CursorElementUnavailable) return EmitSimpleState("element-unavailable") == 0 ? 2 : 3;
+    if (result == CursorTeamsElementRequired) return EmitSimpleState("teams-element-required") == 0 ? 2 : 3;
+    if ((result & CursorSuccessBase) == 0) return EmitSimpleState("uia-unavailable") == 0 ? 2 : 3;
+
+    const DWORD flags = result & ~CursorSuccessBase;
     std::ostringstream json;
     json << "{\"contractVersion\":1,\"state\":\"teams-element-inspected\""
-         << ",\"controlType\":" << controlType
-         << ",\"namePresent\":" << (nameCharacters > 0 ? "true" : "false")
-         << ",\"nameWithinLimit\":" << (nameCharacters <= static_cast<std::size_t>(MaximumSensitiveCharacters) ? "true" : "false")
-         << ",\"textPatternAvailable\":" << (textPatternAvailable ? "true" : "false")
-         << ",\"textPresent\":" << (textCharacters > 0 ? "true" : "false")
-         << ",\"textWithinLimit\":" << (textCharacters <= static_cast<std::size_t>(MaximumSensitiveCharacters) ? "true" : "false")
+         << ",\"namePresent\":" << ((flags & 1) != 0 ? "true" : "false")
+         << ",\"nameWithinLimit\":" << ((flags & 2) != 0 ? "true" : "false")
+         << ",\"textControl\":" << ((flags & 4) != 0 ? "true" : "false")
+         << ",\"textPatternAvailable\":" << ((flags & 8) != 0 ? "true" : "false")
+         << ",\"textPresent\":" << ((flags & 16) != 0 ? "true" : "false")
+         << ",\"textWithinLimit\":" << ((flags & 32) != 0 ? "true" : "false")
          << ",\"contentInspected\":true,\"contentEmitted\":false,\"contentPersisted\":false}\n";
     return WriteText(json.str()) ? 0 : 3;
+}
+
+int RunBoundedWorker(std::wstring_view workerArgument, bool cursorProbe) {
+    std::vector<wchar_t> executable(32'768);
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (length == 0 || length >= executable.size()) return EmitSimpleState("helper-launch-failed") == 0 ? 2 : 3;
+    std::wstring command = L"\"";
+    command.append(executable.data(), length);
+    command += L"\" ";
+    command += workerArgument;
+    std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+    mutableCommand.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION processInfo{};
+    if (!CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &processInfo)) {
+        return EmitSimpleState("helper-launch-failed") == 0 ? 2 : 3;
+    }
+    UniqueHandle process(processInfo.hProcess);
+    UniqueHandle thread(processInfo.hThread);
+    const DWORD waitResult = WaitForSingleObject(process.get(), ProbeTimeoutMilliseconds);
+    if (waitResult == WAIT_TIMEOUT) {
+        TerminateProcess(process.get(), 2);
+        WaitForSingleObject(process.get(), 1'000);
+        return EmitSimpleState("probe-timeout") == 0 ? 2 : 3;
+    }
+    if (waitResult != WAIT_OBJECT_0) return EmitSimpleState("probe-failed") == 0 ? 2 : 3;
+    DWORD workerResult = 0;
+    if (!GetExitCodeProcess(process.get(), &workerResult)) return EmitSimpleState("probe-failed") == 0 ? 2 : 3;
+    return EmitWorkerResult(workerResult, cursorProbe);
 }
 
 void PrintUsage() {
@@ -185,6 +235,22 @@ void PrintUsage() {
 int wmain(int argc, wchar_t* argv[]) {
     if (argc == 2 && wcscmp(argv[1], L"contract") == 0) return RunContract();
 
+    if (argc == 2 && wcscmp(argv[1], L"probe") == 0) return RunBoundedWorker(L"probe-worker", false);
+    if (argc >= 2 && wcscmp(argv[1], L"probe-at-cursor") == 0) {
+        bool consentConfirmed = false;
+        bool valid = true;
+        for (int index = 2; index < argc; ++index) {
+            if (wcscmp(argv[index], L"--consent-confirmed") == 0) consentConfirmed = true;
+            else valid = false;
+        }
+        if (!valid) {
+            PrintUsage();
+            return 1;
+        }
+        if (!consentConfirmed) return EmitSimpleState("consent-required") == 0 ? 2 : 3;
+        return RunBoundedWorker(L"probe-at-cursor-worker --consent-confirmed", true);
+    }
+
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) return 1;
     const bool shouldUninitialize = SUCCEEDED(initialized);
@@ -192,18 +258,11 @@ int wmain(int argc, wchar_t* argv[]) {
     const HRESULT created = CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation));
     int exitCode = 1;
     if (FAILED(created) || !automation) {
-        WriteText("{\"contractVersion\":1,\"state\":\"uia-unavailable\",\"contentEmitted\":false,\"contentPersisted\":false}\n");
-    } else if (argc == 2 && wcscmp(argv[1], L"probe") == 0) {
-        exitCode = RunProbe(automation.Get());
-    } else if (argc >= 2 && wcscmp(argv[1], L"probe-at-cursor") == 0) {
-        bool consentConfirmed = false;
-        bool valid = true;
-        for (int index = 2; index < argc; ++index) {
-            if (wcscmp(argv[index], L"--consent-confirmed") == 0) consentConfirmed = true;
-            else valid = false;
-        }
-        if (valid) exitCode = RunProbeAtCursor(automation.Get(), consentConfirmed);
-        else PrintUsage();
+        exitCode = static_cast<int>(ProbeUiaUnavailable);
+    } else if (argc == 2 && wcscmp(argv[1], L"probe-worker") == 0) {
+        exitCode = static_cast<int>(RunProbeWorker(automation.Get()));
+    } else if (argc == 3 && wcscmp(argv[1], L"probe-at-cursor-worker") == 0 && wcscmp(argv[2], L"--consent-confirmed") == 0) {
+        exitCode = static_cast<int>(RunProbeAtCursorWorker(automation.Get()));
     } else {
         PrintUsage();
     }
