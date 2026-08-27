@@ -467,7 +467,7 @@ int RunCapture(DWORD processId, bool consentConfirmed, std::uint64_t durationMil
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0 && data != nullptr) {
                 std::memcpy(ownedPayload.data(), data, byteCount);
             } else {
-                std::fill_n(ownedPayload.data(), byteCount, 0);
+                std::fill_n(ownedPayload.data(), byteCount, std::uint8_t{0});
             }
 
             const bool stateChanged = tracker.ObserveSignal(hasSignal, GetTickCount64());
