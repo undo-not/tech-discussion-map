@@ -134,6 +134,8 @@ export function CapturePanel() {
         setPrivacyStatus(status);
       } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
     }
+    transcriptRef.current = emptyTranscriptState;
+    setTranscript(emptyTranscriptState);
     consentRef.current = createConsentRecord();
     consentAllowedRef.current = true;
     sessionWriteBlockedRef.current = false;
