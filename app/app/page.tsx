@@ -60,7 +60,7 @@ export default function Home() {
 
   const normalizedQuery = query.trim().toLocaleLowerCase('ja');
   const filteredTranscript = liveTranscript.utterances.filter((item) => !normalizedQuery || `${item.speaker} ${item.text}`.toLocaleLowerCase('ja').includes(normalizedQuery));
-  const visibleInsights = analysisHistory.present.items.filter((item) => !['withdrawn', 'superseded'].includes(item.status));
+  const visibleInsights = analysisHistory.present.items.filter((item) => !['withdrawn', 'superseded'].includes(item.status)).slice(-100);
   const insightCategories = [...new Set(visibleInsights.map((item) => item.kind))];
   const insightCounts = visibleInsights.reduce<Record<string, number>>((counts, item) => {
     counts[item.kind] = (counts[item.kind] ?? 0) + 1;

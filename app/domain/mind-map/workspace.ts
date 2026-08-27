@@ -29,11 +29,15 @@ export function commitAnalysisHistory(history: AnalysisHistory, next: AnalysisSt
   return { past: [...history.past, structuredClone(history.present)].slice(-maximumHistoryEntries), present: structuredClone(next), future: [] };
 }
 
-function restoredState(current: AnalysisState, target: AnalysisState, utterances: TranscriptUtterance[]): AnalysisState {
+function restoredState(current: AnalysisState, target: AnalysisState, utterances: TranscriptUtterance[], preserveRemovedAiEvidence = false): AnalysisState {
+  const retainedTombstones = preserveRemovedAiEvidence
+    ? current.items.filter((item) => item.provenance === 'ai-suggested' && !target.items.some((candidate) => candidate.id === item.id)).map((item) => ({ ...item, status: 'withdrawn' as const }))
+    : [];
   return validateAnalysisState({
     ...structuredClone(target),
     revision: current.revision + 1,
     appliedDeltas: structuredClone(current.appliedDeltas),
+    items: [...structuredClone(target.items), ...structuredClone(retainedTombstones)],
   }, utterances);
 }
 
@@ -42,7 +46,7 @@ export function undoAnalysisHistory(history: AnalysisHistory, utterances: Transc
   if (!target) return history;
   return {
     past: history.past.slice(0, -1),
-    present: restoredState(history.present, target, utterances),
+    present: restoredState(history.present, target, utterances, true),
     future: [structuredClone(history.present), ...history.future].slice(0, maximumHistoryEntries),
   };
 }
@@ -101,8 +105,12 @@ export function resetMapLayout(): MapLayout {
   return { positions: {} };
 }
 
-export function latestRenderedMapItems(items: AnalysisItem[]): AnalysisItem[] {
-  return items.slice(-maximumRenderedNodes);
+export function latestRenderedMapItems(items: AnalysisItem[], pinnedItemId = ''): AnalysisItem[] {
+  if (items.length <= maximumRenderedNodes) return items;
+  const latest = items.slice(-maximumRenderedNodes);
+  const pinned = pinnedItemId ? items.find((item) => item.id === pinnedItemId) : undefined;
+  if (!pinned || latest.some((item) => item.id === pinned.id)) return latest;
+  return [pinned, ...latest.slice(1)];
 }
 
 export function mapCanvasHeight(layout: MapLayout, visibleIds: Set<string>): number {

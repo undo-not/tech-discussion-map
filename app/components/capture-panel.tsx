@@ -185,7 +185,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current) { setAnalysisStatus('分析中に外部送信許可が解除されたため、結果を適用しませんでした。'); return; }
           if (delta.operations.length === 0) { setAnalysisStatus('OpenAI分析: 構造上の変化はありません。'); return; }
           const next = applyAnalysisDelta(getAnalysisState(), delta, transcriptRef.current.utterances);
-          publishAnalysisState(next);
+          publishAnalysisState(next); persistSnapshot(transcriptRef.current);
           setAnalysisStatus(`OpenAI分析をrevision ${next.revision}へ原子的に適用しました。`);
         } finally { setOpenAiInFlight((value) => Math.max(0, value - 1)); }
         return;
@@ -197,7 +197,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       const delta = analyzeWithDeterministicMock(currentTranscript.utterances, currentState);
       if (delta.operations.length === 0) { setAnalysisStatus('local mock: 構造上の変化はありません。'); return; }
       const next = applyAnalysisDelta(getAnalysisState(), delta, currentTranscript.utterances);
-      publishAnalysisState(next);
+      publishAnalysisState(next); persistSnapshot(currentTranscript);
       setAnalysisStatus(`local mockをrevision ${next.revision}へ更新しました。`);
     }).catch((error: unknown) => {
       if (error instanceof Error && error.message === 'analysis-stale-revision') {

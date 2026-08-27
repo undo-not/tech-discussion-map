@@ -67,7 +67,7 @@ describe('LiveMindMap DOM integration', () => {
     expect(viewport.scrollLeft).toBe(36);
   });
 
-  test('a focus callback created before the 100-node boundary keeps degraded following active', () => {
+  test('a focus callback created before the 100-node boundary keeps its pinned target active', () => {
     const first = stateWithNodes(100);
     const view = render(<LiveMindMap {...baseProps} analysisState={first} focusRequest={{ sequence: 1, itemId: 'component-node-99', evidenceUtteranceIds: ['component-u99'] }} />);
     view.rerender(<LiveMindMap {...baseProps} analysisState={stateWithNodes(101, 1)} focusRequest={{ sequence: 1, itemId: 'component-node-99', evidenceUtteranceIds: ['component-u99'] }} />);
@@ -78,6 +78,33 @@ describe('LiveMindMap DOM integration', () => {
 
     view.rerender(<LiveMindMap {...baseProps} analysisState={stateWithNodes(202, 2)} focusRequest={{ sequence: 1, itemId: 'component-node-99', evidenceUtteranceIds: ['component-u99'] }} />);
     flushFrames();
-    expect(viewport.scrollTop).toBeGreaterThan(followedTop);
+    expect(viewport.scrollTop).toBe(followedTop);
+    expect(document.activeElement).toBe(document.getElementById('map-node-component-node-99'));
+    expect(screen.getByLabelText(/合成node 99/).getAttribute('aria-current')).toBe('true');
+  });
+
+  test('an old evidence target is pinned inside a 300-node degraded render window', () => {
+    const state = stateWithNodes(240);
+    render(<LiveMindMap {...baseProps} analysisState={state} focusRequest={{ sequence: 1, evidenceUtteranceIds: ['component-u10'] }} />);
+    flushFrames();
+    const target = document.getElementById('map-node-component-node-10');
+    expect(target).not.toBeNull();
+    expect(document.activeElement).toBe(target);
+    expect(target?.getAttribute('aria-current')).toBe('true');
+    expect(screen.getAllByRole('button', { name: /根拠 component-u/ })).toHaveLength(100);
+  });
+
+  test('manual scrolling stops degraded automatic following until a filter key changes', () => {
+    const view = render(<LiveMindMap {...baseProps} analysisState={stateWithNodes(202)} />);
+    flushFrames();
+    const viewport = screen.getByRole('region', { name: 'マップviewport' });
+    expect(viewport.scrollTop).toBeGreaterThan(0);
+    viewport.scrollTop = 0;
+    view.rerender(<LiveMindMap {...baseProps} analysisState={stateWithNodes(203, 1)} />);
+    flushFrames();
+    expect(viewport.scrollTop).toBe(0);
+    fireEvent.click(screen.getByRole('button', { name: '拡大' }));
+    flushFrames();
+    expect(viewport.scrollTop).toBeGreaterThan(0);
   });
 });

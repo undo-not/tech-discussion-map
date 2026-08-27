@@ -41,6 +41,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   const lastFocusedNodeRef = useRef('');
   const degradedViewportTrackingRef = useRef<DegradedViewportTracking>({ processedKey: '', trackedScroll: null });
   const explicitReframeRef = useRef(false);
+  const focusFrameRef = useRef(0);
   const renderedLayoutRef = useRef<MapLayout>({ positions: {} });
   const zoomRef = useRef(1);
   const degradedRef = useRef(false);
@@ -50,6 +51,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
     const frame = requestAnimationFrame(() => setLayout((current) => analysisState.revision === 0 && analysisState.items.length === 0 ? resetMapLayout() : reconcileMapLayout(current, analysisState)));
     return () => cancelAnimationFrame(frame);
   }, [analysisState]);
+  useEffect(() => () => { if (focusFrameRef.current) cancelAnimationFrame(focusFrameRef.current); }, []);
   const renderedLayout = useMemo(() => analysisState.revision === 0 && analysisState.items.length === 0 ? resetMapLayout() : reconcileMapLayout(layout, analysisState), [analysisState, layout]);
 
   const filtered = useMemo(() => {
@@ -61,7 +63,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
     );
   }, [analysisState, kindFilter, query, showTombstones]);
   const degraded = filtered.length > maximumRenderedNodes;
-  const visibleItems = useMemo(() => latestRenderedMapItems(filtered), [filtered]);
+  const visibleItems = useMemo(() => latestRenderedMapItems(filtered, selectedId), [filtered, selectedId]);
   const visibleIds = useMemo(() => new Set(visibleItems.map((item) => item.id)), [visibleItems]);
   const selected = analysisState.items.find((item) => item.id === selectedId) ?? null;
   const canvasHeight = mapCanvasHeight(renderedLayout, visibleIds);
@@ -82,7 +84,9 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
     setEditError('');
     setSelectedId(id);
     onSelectionChange?.(id);
-    requestAnimationFrame(() => {
+    if (focusFrameRef.current) cancelAnimationFrame(focusFrameRef.current);
+    focusFrameRef.current = requestAnimationFrame(() => {
+      focusFrameRef.current = 0;
       const node = document.getElementById(`map-node-${id}`);
       const viewport = viewportRef.current;
       node?.focus({ preventScroll: true });
@@ -106,6 +110,8 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
       setQuery('');
       setKindFilter('all');
       if (['withdrawn', 'superseded'].includes(target.status)) setShowTombstones(true);
+      setSelectedId(target.id);
+      onSelectionChange?.(target.id);
       secondFrame = requestAnimationFrame(() => focusNode(target.id, true));
     });
     return () => { cancelAnimationFrame(firstFrame); if (secondFrame) cancelAnimationFrame(secondFrame); };

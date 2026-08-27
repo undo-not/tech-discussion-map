@@ -62,6 +62,19 @@ test('manual edits and analysis commits share bounded undo and redo history', ()
   assert.ok(history.present.revision > revisionBeforeUndo);
 });
 
+test('undoing an AI addition retains an evidence tombstone so mock analysis cannot recreate it', () => {
+  const meeting = [{ id: 'undo-ai-u1', revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: 0, endMs: 10, text: '認証方式を実装します' }];
+  const analyzed = applyAnalysisDelta(emptyAnalysisState, analyzeWithDeterministicMock(meeting, emptyAnalysisState), meeting);
+  let history = commitAnalysisHistory(createAnalysisHistory(emptyAnalysisState), analyzed);
+  history = undoAnalysisHistory(history, meeting);
+  assert.equal(history.present.items.length, 1);
+  assert.equal(history.present.items[0].status, 'withdrawn');
+  assert.deepEqual(history.present.items[0].evidenceUtteranceIds, ['undo-ai-u1']);
+  assert.equal(analyzeWithDeterministicMock(meeting, history.present).operations.length, 0);
+  history = redoAnalysisHistory(history, meeting);
+  assert.equal(history.present.items[0].status, analyzed.items[0].status);
+});
+
 test('confirmation protects an AI item and spatial keyboard navigation is deterministic', () => {
   const state = stateWithNodes(5);
   const confirmed = applyHumanItemPatch(state, 'map-node-0', { confirm: true }, utterances);
@@ -118,6 +131,16 @@ test('a new utterance keeps its evidence even when its title matches a human ite
   assert.deepEqual(add.evidenceUtteranceIds, ['human-title-u2']);
 });
 
+test('same-title finals in one mock window coalesce without dropping evidence', () => {
+  const meeting = [
+    { id: 'coalesce-u1', revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: 0, endMs: 10, text: '同じ論点です' },
+    { id: 'coalesce-u2', revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: 20, endMs: 30, text: '同じ論点です' },
+  ];
+  const delta = analyzeWithDeterministicMock(meeting, emptyAnalysisState);
+  assert.equal(delta.operations.length, 1);
+  assert.deepEqual(delta.operations[0].evidenceUtteranceIds, ['coalesce-u1', 'coalesce-u2']);
+});
+
 test('keyboard selection replacement and scroll target keep a distant node visible', () => {
   assert.equal(visibleSelectionId('removed', ['first', 'second']), 'first');
   assert.equal(visibleSelectionId('second', ['first', 'second']), 'second');
@@ -133,6 +156,10 @@ test('keyboard selection replacement and scroll target keep a distant node visib
   assert.equal(latest.length, maximumRenderedNodes);
   assert.equal(latest[0].id, 'map-node-1');
   assert.equal(latest.at(-1).id, 'map-node-100');
+  const pinned = latestRenderedMapItems(stateWithNodes(300).items, 'map-node-10');
+  assert.equal(pinned.length, maximumRenderedNodes);
+  assert.equal(pinned[0].id, 'map-node-10');
+  assert.equal(pinned.at(-1).id, 'map-node-299');
 });
 
 test('degraded 300-node display scrolls to recent nodes only when none intersects the viewport', () => {

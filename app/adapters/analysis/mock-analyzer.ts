@@ -30,6 +30,7 @@ function tempIdFor(id: string): string {
 export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], state: AnalysisState): AnalysisDelta {
   const finals = utterances.filter((item) => item.phase === 'final').slice(-8);
   const operations: AnalysisOperation[] = [];
+  const pendingAdds = new Map<string, Extract<AnalysisOperation, { op: 'add' }>>();
   for (const utterance of finals) {
     const text = utterance.text.trim();
     if (!text) continue;
@@ -52,8 +53,16 @@ export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], 
       operations.push({ op: 'update', itemId: correctionTarget.id, title: titleFor(text), detail: text.slice(0, 500), status: classified.status, confidence: 0.84, addEvidenceUtteranceIds: [utterance.id], removeEvidenceUtteranceIds: [] });
       continue;
     }
+    const pendingKey = `${classified.kind}:${normalize(text.replace(/^(?:訂正|撤回)[:：]?\s*/, ''))}`;
+    const pending = pendingAdds.get(pendingKey);
+    if (pending) {
+      if (pending.evidenceUtteranceIds.length < maximumEvidenceIds) pending.evidenceUtteranceIds.push(utterance.id);
+      continue;
+    }
     if (state.items.length + operations.filter((operation) => operation.op === 'add').length >= maximumAnalysisItems) continue;
-    operations.push({ op: 'add', tempId: tempIdFor(utterance.id), kind: classified.kind, title: titleFor(text), detail: text.slice(0, 500), status: classified.status, confidence: 0.72, evidenceUtteranceIds: [utterance.id] });
+    const operation: Extract<AnalysisOperation, { op: 'add' }> = { op: 'add', tempId: tempIdFor(utterance.id), kind: classified.kind, title: titleFor(text), detail: text.slice(0, 500), status: classified.status, confidence: 0.72, evidenceUtteranceIds: [utterance.id] };
+    operations.push(operation);
+    pendingAdds.set(pendingKey, operation);
   }
   return {
     contractVersion: 1,
