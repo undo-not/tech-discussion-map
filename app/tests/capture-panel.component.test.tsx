@@ -7,6 +7,7 @@ type CaptionInstance = {
   resolveStart: () => void;
   stopCalls: number;
   fail: () => void;
+  failResume: () => void;
 };
 
 const captionHarness = vi.hoisted(() => ({ instances: [] as CaptionInstance[] }));
@@ -42,13 +43,21 @@ vi.mock('@/adapters/transcription/local-caption-client.ts', () => ({
     constructor() {
       let resolveStart: () => void = () => undefined;
       this.#started = new Promise<void>((resolve) => { resolveStart = resolve; });
-      this.#record = { resolveStart, stopCalls: 0, fail: () => this.onFailure('synthetic-failure') };
+      let resumeFails = false;
+      this.#record = {
+        resolveStart,
+        stopCalls: 0,
+        fail: () => this.onFailure('synthetic-failure'),
+        failResume: () => { resumeFails = true; },
+      };
       captionHarness.instances.push(this.#record);
+      this.#resume = () => resumeFails ? Promise.reject(new Error('synthetic-resume-failure')) : Promise.resolve();
     }
 
+    readonly #resume: () => Promise<void>;
     start(): Promise<void> { return this.#started; }
     pause(): Promise<void> { return Promise.resolve(); }
-    resume(): Promise<void> { return Promise.resolve(); }
+    resume(): Promise<void> { return this.#resume(); }
     stop(): Promise<void> { this.#record.stopCalls += 1; return Promise.resolve(); }
   },
 }));
@@ -62,7 +71,12 @@ vi.mock('@/adapters/transcription/local-companion-client.ts', () => ({
     constructor() {
       let resolveStart: () => void = () => undefined;
       this.#started = new Promise<void>((resolve) => { resolveStart = resolve; });
-      this.#record = { resolveStart, stopCalls: 0, fail: () => this.onFailure('synthetic-failure') };
+      this.#record = {
+        resolveStart,
+        stopCalls: 0,
+        fail: () => this.onFailure('synthetic-failure'),
+        failResume: () => undefined,
+      };
       microphoneHarness.clients.push(this.#record);
     }
 
@@ -152,6 +166,26 @@ describe('CapturePanel input ownership', () => {
     await screen.findByRole('button', { name: 'Teams字幕OCRを開始' });
     expect(screen.getByText('CAPTURE OFF')).toBeTruthy();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
+    expect(captionHarness.instances).toHaveLength(2);
+  });
+
+  test('caption resume failure releases ownership and allows a fresh input session', async () => {
+    let analysisState: AnalysisState = emptyAnalysisState;
+    render(<CapturePanel
+      analysisState={analysisState}
+      getAnalysisState={() => analysisState}
+      onAnalysisStateChange={(next) => { analysisState = next; }}
+    />);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
+    captionHarness.instances[0].resolveStart();
+    fireEvent.click(await screen.findByRole('button', { name: '一時停止' }));
+    captionHarness.instances[0].failResume();
+    fireEvent.click(await screen.findByRole('button', { name: '再開' }));
+
+    await screen.findByRole('button', { name: 'Teams字幕OCRを開始' });
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     expect(captionHarness.instances).toHaveLength(2);
   });

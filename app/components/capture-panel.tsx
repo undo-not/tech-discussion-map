@@ -492,6 +492,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       await captionClient.current.resume().catch(() => {
         const client = captionClient.current;
         captionClient.current = null;
+        cancelInputStart(inputStartGateRef.current);
         void client?.stop().catch(() => undefined);
         setInputMode('none');
         transitionCaptionSession({ type: 'stop' });
@@ -523,7 +524,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     sessionWriteBlockedRef.current = true;
     saveLocallyRef.current = false;
     setSaveLocally(false);
-    if (inputStartGateRef.current.pendingAttempt !== null || hasActiveInput()) await stop();
+    if (inputStartGateRef.current.pendingAttempt !== null || inputStartGateRef.current.activeAttempt !== null || hasActiveInput()) await stop();
     await persistenceChain.current;
     const id = sessionIdRef.current;
     const localDeleteRequired = persistedSessionRef.current || persistenceMayExistRef.current;
