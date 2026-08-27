@@ -27,6 +27,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: app/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Scan tracked public repository content
+        working-directory: .
+        run: node scripts/scan-public-repo.mjs
       - run: pnpm run typecheck
       - run: pnpm test
       - run: pnpm run lint
@@ -74,5 +77,22 @@ jobs:
         with:
           name: techmap-transcriber-windows-x64
           path: native/transcription/build/Release/techmap-transcriber.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  native-privacy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Windows privacy helper
+        run: cmake -S native/privacy -B native/privacy/build -A x64
+      - name: Build Windows privacy helper
+        run: cmake --build native/privacy/build --config Release
+      - name: Test ACL, DPAPI, and Credential Manager boundaries with synthetic data
+        run: ctest --test-dir native/privacy/build -C Release --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: techmap-privacy-windows-x64
+          path: native/privacy/build/Release/techmap-privacy.exe
           if-no-files-found: error
           retention-days: 7

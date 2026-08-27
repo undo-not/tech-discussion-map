@@ -29,13 +29,13 @@ MVP must not infer an individual identity from the remote mixed stream.
 - Teams PCM: 48 kHz stereo signed 16-bit little endian, three-frame boxcar low-passでdownmixしてから3:1 decimationし、shared input formatへ変換する。
 - Companion listener: exactly `127.0.0.1:43117`.
 - Allowed UI origins: `http://127.0.0.1:3000` and `http://localhost:3000`.
-- Browser authorization: 256-bit random token, memory-only, Origin-bound, ten-minute expiry.
+- Browser authorization: a 256-bit companion launch secret delivered through a URL fragment, followed by a separate 256-bit random bearer token that is memory-only, Origin-bound, and expires in ten minutes.
 - Worker IPC: versioned `TMI1` input and `TMO1` output frames with reserved-byte and size validation.
 - Raw audio has no file, IndexedDB, localStorage, log, telemetry, crash attachment, or external network sink.
 - Meeting runtime has no model download path.
 
-Final transcripts are persisted only after explicit checkbox opt-in. IndexedDB is outside the Git working tree; retention is until the user selects `保存データを削除`. Issue #6 extends deletion to complete session state and exports.
+Final transcripts are persisted only after explicit checkbox opt-in, through the DPAPI session boundary defined in `privacy-boundary.md`. Browser IndexedDB is not an active persistence target; obsolete plaintext data from earlier builds is purged on startup.
 
 ## Manual verification boundary
 
-Before Issue #6, test only synthetic input and the operator's own solo microphone. Do not capture a Teams meeting or another participant. Verify the local UI on port 3000, model checksum, worker startup, start/pause/resume/stop, error fallback, opt-in save, and delete.
+Verify the local UI on port 3000, launch-secret consumption, model checksum, worker startup, start/pause/resume/stop, error fallback, opt-in encrypted save, retention sweep, and whole-session delete. Real meeting verification requires recorded participant consent but must not record meeting content in test evidence.

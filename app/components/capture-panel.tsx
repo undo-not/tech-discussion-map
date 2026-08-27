@@ -2,162 +2,324 @@
 
 import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { isLoopbackRuntime, listMicrophones, startMicrophoneCapture, type MicrophoneCapture, type MicrophoneDevice } from '@/adapters/audio/browser-microphone.ts';
-import { deleteAllLocalTranscripts, localTranscriptStorageDescription, saveFinalTranscript } from '@/adapters/persistence/transcript-store.ts';
+import { purgeLegacyPlaintextTranscripts } from '@/adapters/persistence/legacy-store-migration.ts';
+import { exportSessionToUserSelectedPath, LocalPrivacyClient, type StoredSession, type StoredSessionMetadata } from '@/adapters/privacy/local-privacy-client.ts';
 import { LocalCompanionTranscriptionClient } from '@/adapters/transcription/local-companion-client.ts';
 import { createSyntheticTranscription } from '@/adapters/transcription/synthetic-transcription.ts';
+import { createConsentRecord, type ConsentRecord } from '@/domain/privacy/consent.ts';
+import { createMinimalUtteranceWindow } from '@/domain/privacy/redaction.ts';
 import { transitionTranscriptionSession, type TranscriptionSessionEvent, type TranscriptionSessionState } from '@/domain/transcription/session.ts';
-import { applyTranscriptEvent, emptyTranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
+import { applyTranscriptEvent, emptyTranscriptState, type TranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
 
 const stateLabels: Record<TranscriptionSessionState, string> = {
-  idle: '待機中',
-  'requesting-permission': 'マイク許可を確認中',
-  'starting-local-engine': 'ローカル音声認識を起動中',
-  listening: '文字起こし中',
-  paused: '一時停止中',
-  stopped: '終了',
-  'permission-denied': 'マイクが拒否されました',
-  'device-unavailable': 'マイクを利用できません',
-  'engine-unavailable': 'ローカル音声認識を利用できません',
+  idle: '待機中', 'requesting-permission': 'マイク許可を確認中', 'starting-local-engine': 'ローカル音声認識を起動中',
+  listening: '文字起こし中', paused: '一時停止中', stopped: '終了', 'permission-denied': 'マイクが拒否されました',
+  'device-unavailable': 'マイクを利用できません', 'engine-unavailable': 'ローカル音声認識を利用できません',
 };
-
+const retentionOptions = [1, 7, 30, 90] as const;
+type RetentionDays = (typeof retentionOptions)[number];
 type SyntheticSession = ReturnType<typeof createSyntheticTranscription>;
 const subscribeRuntime = () => () => undefined;
 
 export function CapturePanel() {
   const localRuntime = useSyncExternalStore(subscribeRuntime, () => isLoopbackRuntime(window.location), () => false);
-  const [sessionState, dispatch] = useReducer(
-    (state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event),
-    'idle',
-  );
+  const [sessionState, dispatch] = useReducer((state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event), 'idle');
   const [devices, setDevices] = useState<MicrophoneDevice[]>([]);
   const [deviceId, setDeviceId] = useState('');
-  const [transcript, setTranscript] = useState(emptyTranscriptState);
+  const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscriptState);
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [saveLocally, setSaveLocally] = useState(false);
+  const [retentionDays, setRetentionDays] = useState<RetentionDays>(7);
+  const [dataControlsAttested, setDataControlsAttested] = useState(false);
+  const [externalAnalysisAllowed, setExternalAnalysisAllowed] = useState(false);
+  const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'synthetic'>('none');
+  const [meetingEnded, setMeetingEnded] = useState(false);
+  const [privacyStatus, setPrivacyStatus] = useState<{ secureStore: boolean; credentialConfigured: boolean; location: string } | null>(null);
+  const [storedSessions, setStoredSessions] = useState<StoredSessionMetadata[]>([]);
   const [message, setMessage] = useState('開始を押すまでマイクへアクセスしません。');
   const microphone = useRef<MicrophoneCapture | null>(null);
   const localClient = useRef<LocalCompanionTranscriptionClient | null>(null);
+  const privacyClient = useRef<LocalPrivacyClient | null>(null);
   const synthetic = useRef<SyntheticSession | null>(null);
+  const transcriptRef = useRef<TranscriptState>(emptyTranscriptState);
+  const consentRef = useRef<ConsentRecord | null>(null);
+  const consentAllowedRef = useRef(false);
+  const sessionStateRef = useRef<TranscriptionSessionState>('idle');
+  const sessionIdRef = useRef('');
+  const sessionCreatedAtRef = useRef('');
+  const persistenceChain = useRef<Promise<void>>(Promise.resolve());
+  const persistedSessionRef = useRef(false);
+  const persistenceMayExistRef = useRef(false);
+  const sessionWriteBlockedRef = useRef(false);
   const saveLocallyRef = useRef(false);
+  const retentionDaysRef = useRef<RetentionDays>(7);
+  const dataControlsAttestedRef = useRef(false);
+  const externalAnalysisAllowedRef = useRef(false);
 
   useEffect(() => { saveLocallyRef.current = saveLocally; }, [saveLocally]);
+  useEffect(() => { retentionDaysRef.current = retentionDays; }, [retentionDays]);
+  useEffect(() => { sessionStateRef.current = sessionState; }, [sessionState]);
   useEffect(() => { void listMicrophones().then(setDevices).catch(() => setDevices([])); }, []);
-  useEffect(() => () => {
-    synthetic.current?.stop();
-    void microphone.current?.stop();
-    void localClient.current?.stop();
-  }, []);
+  useEffect(() => { void purgeLegacyPlaintextTranscripts().catch(() => setMessage('旧版のplaintext保存を削除できません。ほかのTechMap tabを閉じて再読み込みしてください。')); }, []);
+  useEffect(() => () => { synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); }, []);
+
+  const connectPrivacy = async () => {
+    if (!localRuntime) throw new Error('privacy-requires-loopback');
+    if (!privacyClient.current) {
+      const client = new LocalPrivacyClient();
+      await client.connect();
+      privacyClient.current = client;
+    }
+    return privacyClient.current;
+  };
+
+  const refreshPrivacyStatus = async (announce = true) => {
+    try {
+      const client = await connectPrivacy();
+      await client.sweep();
+      const [status, sessions] = await Promise.all([client.status(), client.list()]);
+      setPrivacyStatus(status);
+      setStoredSessions(sessions);
+      if (announce) setMessage('current-user ACLとDPAPIで保護されたローカル保存先を確認しました。');
+    } catch {
+      setPrivacyStatus(null);
+      if (announce) setMessage('privacy helperを確認できません。保存と外部分析はfail closedで無効です。');
+    }
+  };
+
+  const snapshot = (state = transcriptRef.current): StoredSession | null => {
+    const consent = consentRef.current;
+    if (!consent || !sessionIdRef.current || !sessionCreatedAtRef.current) return null;
+    const now = new Date();
+    return {
+      id: sessionIdRef.current, createdAt: sessionCreatedAtRef.current, updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + retentionDaysRef.current * 86_400_000).toISOString(), retentionDays: retentionDaysRef.current,
+      consent, transcript: state.utterances.filter((item) => item.phase === 'final'), analysis: [],
+      state: { capture: sessionStateRef.current, externalAnalysisAllowed: externalAnalysisAllowedRef.current, dataControlsAttested: dataControlsAttestedRef.current },
+    };
+  };
+
+  const persistSnapshot = (state: TranscriptState) => {
+    if (!saveLocallyRef.current || sessionWriteBlockedRef.current) return;
+    const value = snapshot(state);
+    if (!value) return;
+    persistenceMayExistRef.current = true;
+    persistenceChain.current = persistenceChain.current.then(async () => {
+      if (sessionWriteBlockedRef.current || value.id !== sessionIdRef.current) return;
+      await (await connectPrivacy()).save(value);
+      persistedSessionRef.current = true;
+    }).catch(() => {
+      saveLocallyRef.current = false;
+      setSaveLocally(false);
+      setMessage('保護された保存に失敗したためmemory-onlyへ切り替えました。以前の暗号化snapshotは残る場合があるため、復旧後に即時削除してください。');
+    });
+  };
 
   const receive = (event: TranscriptUtterance) => {
-    setTranscript((state) => applyTranscriptEvent(state, event));
-    if (event.phase === 'final' && saveLocallyRef.current) void saveFinalTranscript(event).catch(() => setMessage('文字起こしをローカル保存できませんでした。'));
+    const next = applyTranscriptEvent(transcriptRef.current, event);
+    transcriptRef.current = next;
+    setTranscript(next);
+    if (event.phase === 'final' && event.source !== 'synthetic') persistSnapshot(next);
   };
 
   const startLocal = async () => {
-    if (!localRuntime) {
-      dispatch({ type: 'engine-unavailable' });
-      setMessage('公開UIでは実音声を取得できません。Windowsローカルruntimeを使用してください。');
+    if (!localRuntime || !consentConfirmed) {
+      setMessage(!localRuntime ? '公開UIでは実音声を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
       return;
     }
+    if (saveLocally) {
+      try {
+        const status = await (await connectPrivacy()).status();
+        if (!status.secureStore) throw new Error('privacy-store-unverified');
+        setPrivacyStatus(status);
+      } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
+    }
+    transcriptRef.current = emptyTranscriptState;
+    setTranscript(emptyTranscriptState);
+    consentRef.current = createConsentRecord();
+    consentAllowedRef.current = true;
+    sessionWriteBlockedRef.current = false;
+    persistenceMayExistRef.current = false;
+    persistedSessionRef.current = false;
+    sessionIdRef.current = crypto.randomUUID();
+    sessionCreatedAtRef.current = new Date().toISOString();
+    setMeetingEnded(false);
     dispatch({ type: 'start-requested' });
-    setMessage('マイク許可はこの操作に対してのみ要求します。');
+    setMessage('同意確認済み。マイク許可はこの操作に対してのみ要求します。');
     let capture: MicrophoneCapture | null = null;
     try {
       let ready = false;
       const client = new LocalCompanionTranscriptionClient('local', receive);
       client.onFailure = () => {
-        void microphone.current?.stop();
-        microphone.current = null;
+        void microphone.current?.stop(); microphone.current = null;
+        setInputMode('none');
         dispatch({ type: 'engine-unavailable' });
-        setMessage('ローカル音声認識が停止しました。入力を終了して合成デモへ切り替えられます。');
+        setMessage('ローカル音声認識が停止し、以後の音声は取得されません。合成デモへ切り替えられます。');
       };
-      capture = await startMicrophoneCapture(deviceId || undefined, (samples) => {
-        if (ready) void client.sendPcm(samples).catch(() => setMessage('ローカル音声認識への入力が停止しました。'));
-      });
+      capture = await startMicrophoneCapture(deviceId || undefined, (samples) => { if (ready) void client.sendPcm(samples).catch(() => undefined); });
+      if (!consentAllowedRef.current) { await capture.stop(); throw new Error('consent-revoked'); }
       microphone.current = capture;
+      setInputMode('microphone');
       dispatch({ type: 'permission-granted' });
       await client.start();
+      if (!consentAllowedRef.current) { await client.stop().catch(() => undefined); throw new Error('consent-revoked'); }
       localClient.current = client;
       ready = true;
       dispatch({ type: 'started' });
-      setMessage('生音声はメモリ内で処理され、保存も外部送信もされません。');
+      setMessage('生音声はmemory内だけで処理され、PC外にもdiskにも送られません。');
       setDevices(await listMicrophones());
     } catch (error) {
-      await capture?.stop();
-      microphone.current = null;
-      localClient.current = null;
+      await capture?.stop(); microphone.current = null; localClient.current = null; setInputMode('none');
+      if (error instanceof Error && error.message === 'consent-revoked') { dispatch({ type: 'stop' }); setMessage('同意確認が解除されたためcaptureを開始しませんでした。'); return; }
       const denied = error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
       dispatch({ type: denied ? 'permission-denied' : error instanceof DOMException ? 'device-unavailable' : 'engine-unavailable' });
-      setMessage(denied ? 'ブラウザー設定でマイクを許可するか、合成デモを利用してください。' : 'companion・モデル・マイクを確認するか、合成デモを利用してください。');
+      setMessage(denied ? 'ブラウザー設定でマイクを許可するか、合成デモを利用してください。' : 'companion・model・microphoneを確認するか、合成デモを利用してください。');
     }
   };
 
   const startDemo = () => {
-    synthetic.current?.stop();
-    synthetic.current = createSyntheticTranscription(receive);
-    synthetic.current.start();
+    setMeetingEnded(false);
+    synthetic.current?.stop(); synthetic.current = createSyntheticTranscription(receive); synthetic.current.start();
+    setInputMode('synthetic');
     dispatch({ type: 'demo-started' });
-    setMessage('合成データだけを再生中です。マイクにはアクセスしていません。');
+    setMessage('合成データだけを再生中です。マイク・外部送信・永続保存は使用しません。');
   };
-
-  const pause = async () => {
-    microphone.current?.pause();
-    synthetic.current?.pause();
-    await localClient.current?.pause().catch(() => undefined);
-    dispatch({ type: 'pause' });
-  };
-
-  const resume = async () => {
-    microphone.current?.resume();
-    synthetic.current?.resume();
-    await localClient.current?.resume().catch(() => undefined);
-    dispatch({ type: 'resume' });
-  };
-
+  const pause = async () => { microphone.current?.pause(); synthetic.current?.pause(); await localClient.current?.pause().catch(() => undefined); dispatch({ type: 'pause' }); };
+  const resume = async () => { microphone.current?.resume(); synthetic.current?.resume(); await localClient.current?.resume().catch(() => undefined); dispatch({ type: 'resume' }); };
   const stop = async () => {
-    synthetic.current?.stop();
-    synthetic.current = null;
-    await microphone.current?.stop();
-    microphone.current = null;
-    await localClient.current?.stop().catch(() => undefined);
-    localClient.current = null;
+    synthetic.current?.stop(); synthetic.current = null;
+    await microphone.current?.stop(); microphone.current = null;
+    await localClient.current?.stop().catch(() => undefined); localClient.current = null;
+    setInputMode('none');
+    await persistenceChain.current;
     dispatch({ type: 'stop' });
-    setMessage('入力を終了しました。生音声bufferは破棄されました。');
+    setMeetingEnded(true);
+    setMessage(saveLocallyRef.current ? '入力を終了し、生音声bufferを破棄しました。暗号化sessionは保持期限まで残ります。' : '入力を終了し、生音声bufferを破棄しました。未保存sessionはmemoryだけに残っています。');
+  };
+  const deleteCurrent = async (): Promise<boolean> => {
+    sessionWriteBlockedRef.current = true;
+    saveLocallyRef.current = false;
+    setSaveLocally(false);
+    if (microphone.current || localClient.current || synthetic.current) await stop();
+    await persistenceChain.current;
+    const id = sessionIdRef.current;
+    const localDeleteRequired = persistedSessionRef.current || persistenceMayExistRef.current;
+    let localDeleteVerified = !localDeleteRequired;
+    if (id && localDeleteRequired) {
+      try { await (await connectPrivacy()).delete(id); localDeleteVerified = true; }
+      catch { localDeleteVerified = false; }
+    }
+    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
+    setMeetingEnded(false);
+    if (localDeleteVerified) {
+      persistedSessionRef.current = false;
+      persistenceMayExistRef.current = false;
+      sessionIdRef.current = '';
+      sessionCreatedAtRef.current = '';
+      consentRef.current = null;
+      saveLocallyRef.current = false;
+      setSaveLocally(false);
+    }
+    setMessage(localDeleteVerified
+      ? '現在sessionのmemoryと暗号化local copyを削除しました。OpenAIへ送信済みのcopyはまだありません。'
+      : 'memory内のsessionは破棄しましたが、暗号化local copyの削除を確認できません。privacy helperを復旧して再試行してください。');
+    void refreshPrivacyStatus(false);
+    return localDeleteVerified;
+  };
+  const revokeConsent = (confirmed: boolean) => {
+    setConsentConfirmed(confirmed);
+    consentAllowedRef.current = confirmed;
+    if (!confirmed) {
+      externalAnalysisAllowedRef.current = false;
+      setExternalAnalysisAllowed(false);
+    }
+    if (!confirmed && sessionState !== 'idle' && sessionState !== 'stopped') {
+      consentRef.current = null;
+      void stop().then(() => deleteCurrent()).then((verified) => {
+        if (verified) setMessage('同意確認が解除されたためcaptureを直ちに停止し、現在sessionを削除しました。');
+      });
+    }
+  };
+  const exportCurrent = async () => {
+    const value = snapshot();
+    if (!value) { setMessage('exportできる同意済みsessionがありません。'); return; }
+    try { await exportSessionToUserSelectedPath(value); setMessage('利用者が選択したlocal pathへsessionをexportしました。'); }
+    catch (error) { if ((error as DOMException)?.name !== 'AbortError') setMessage('exportを完了できませんでした。'); }
+  };
+  const loadSession = async (id: string) => {
+    try {
+      const value = await (await connectPrivacy()).load(id);
+      let state = emptyTranscriptState;
+      for (const utterance of value.transcript) state = applyTranscriptEvent(state, utterance);
+      transcriptRef.current = state; setTranscript(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
+      persistedSessionRef.current = true;
+      persistenceMayExistRef.current = true;
+      sessionWriteBlockedRef.current = false;
+      setRetentionDays(value.retentionDays);
+      setMessage('暗号化sessionをmemoryへ読み込みました。captureは自動再開しません。');
+    } catch { setMessage('保存sessionを読み込めませんでした。'); }
+  };
+  const deleteStoredSession = async (id: string) => {
+    try {
+      await (await connectPrivacy()).delete(id);
+      await refreshPrivacyStatus(false);
+      setMessage('復号不能sessionの暗号化fileを、復号せずに削除しました。');
+    } catch { setMessage('復号不能sessionを削除できませんでした。privacy helperを確認してください。'); }
   };
 
-  const latest = transcript.utterances.slice(-2);
   const active = sessionState === 'listening' || sessionState === 'paused';
+  const latest = transcript.utterances.slice(-2);
+  const preview = createMinimalUtteranceWindow(transcript.utterances);
 
   return (
     <section aria-label="音声入力" className="border-b border-[#d9ded8] bg-[#eef3ef] px-4 py-3 md:px-6">
+      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-2 pb-2 text-xs">
+        <span className={`rounded-full px-3 py-1 font-bold ${inputMode === 'microphone' ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {inputMode === 'microphone' ? 'ON' : 'OFF'}</span>
+        <span className="rounded-full bg-white px-3 py-1 font-bold text-[#52615c]">OPENAI送信 OFF</span>
+        <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
+        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON（#3接続待ち）' : 'OFF'}</span>
+      </div>
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`h-2.5 w-2.5 rounded-full ${sessionState === 'listening' ? 'animate-pulse bg-[#2b9b6b]' : 'bg-[#8a9893]'}`} />
-            <strong className="text-sm">{stateLabels[sessionState]}</strong>
-            <span className="text-xs text-[#52615c]">{message}</span>
-          </div>
+          <div className="flex flex-wrap items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${active ? 'animate-pulse bg-[#c55445]' : 'bg-[#8a9893]'}`} /><strong className="text-sm">{stateLabels[sessionState]}</strong><span className="text-xs text-[#52615c]">{message}</span></div>
           {latest.length > 0 && <div aria-live="polite" className="mt-2 space-y-1 text-xs text-[#34423e]">{latest.map((item) => <p key={item.id}><b>{item.phase === 'final' ? '確定' : '認識中'} · {item.speaker === 'self' ? '自分' : item.source === 'synthetic' ? '合成' : '相手側'}:</b> {item.text}</p>)}</div>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <label className="sr-only" htmlFor="microphone-device">入力マイク</label>
-          <select id="microphone-device" value={deviceId} disabled={active} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs">
-            <option value="">既定のマイク</option>
-            {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}
-          </select>
-          {!active && <button disabled={!localRuntime} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
+          <select id="microphone-device" value={deviceId} disabled={active} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs"><option value="">既定のマイク</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select>
+          {!active && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
           {sessionState === 'listening' && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
           {sessionState === 'paused' && <button onClick={() => void resume()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white">再開</button>}
           {active && <button onClick={() => void stop()} className="rounded-lg border border-[#c8a7a0] bg-white px-3 py-2 text-xs font-semibold text-[#8b3f34]">終了</button>}
           {!active && <button onClick={startDemo} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}
         </div>
       </div>
-      <details className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
-        <summary className="cursor-pointer font-semibold">保存と安全境界</summary>
-        <div className="mt-2 flex flex-wrap items-center gap-3 rounded-lg bg-white/70 p-2">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={saveLocally} onChange={(event) => setSaveLocally(event.target.checked)} />確定文字起こしだけをローカル保存</label>
-          <span>保存先: {localTranscriptStorageDescription}</span><span>保持: 削除するまで</span>
-          <button onClick={() => void deleteAllLocalTranscripts().then(() => setMessage('ローカル保存した文字起こしを削除しました。')).catch(() => setMessage('削除できませんでした。ほかのタブを閉じて再試行してください。'))} className="rounded border border-[#c8a7a0] px-2 py-1 font-semibold text-[#8b3f34]">保存データを削除</button>
-          <span className="font-semibold text-[#8b3f34]">Issue #6完了までは実会議に使用しないでください。</span>
+      <details open={!consentConfirmed || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
+        <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
+        <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
+          <div className="space-y-2">
+            <label className="flex items-start gap-2 font-semibold text-[#8b3f34]"><input type="checkbox" checked={consentConfirmed} onChange={(event) => revokeConsent(event.target.checked)} />Teams側の表示だけに依存せず、全参加者がこのアプリの文字起こし・分析に同意したことを確認しました</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={saveLocally} disabled={!consentConfirmed || active} onChange={(event) => setSaveLocally(event.target.checked)} />確定文字起こし・分析・session状態を暗号化してローカル保存</label>
+            <label>保持期間 <select value={retentionDays} disabled={!saveLocally || active} onChange={(event) => setRetentionDays(Number(event.target.value) as RetentionDays)} className="ml-2 rounded border px-2 py-1">{retentionOptions.map((days) => <option value={days} key={days}>{days}日</option>)}</select></label>
+            <p>保存先: %LOCALAPPDATA%\TechMapLive\sessions（current-user-only ACL + DPAPI）。生音声は保存対象外です。</p>
+            <button onClick={() => void refreshPrivacyStatus()} className="rounded border px-2 py-1 font-semibold">ローカル保護・API key状態を確認</button>
+            <span>{privacyStatus ? `ACL/DPAPI: 有効 · Credential Manager key: ${privacyStatus.credentialConfigured ? '設定済み' : '未設定'}` : '未確認'}</span>
+          </div>
+          <div className="space-y-2">
+            <label className="flex items-start gap-2"><input type="checkbox" checked={dataControlsAttested} onChange={(event) => { const checked = event.target.checked; dataControlsAttestedRef.current = checked; setDataControlsAttested(checked); if (!checked) { externalAnalysisAllowedRef.current = false; setExternalAnalysisAllowed(false); } }} />利用するOpenAI API projectのData controlsと保持条件を確認しました</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={externalAnalysisAllowed} disabled={!consentConfirmed || !dataControlsAttested || !privacyStatus?.credentialConfigured} onChange={(event) => { externalAnalysisAllowedRef.current = event.target.checked; setExternalAnalysisAllowed(event.target.checked); }} />redaction後の最小textをOpenAI分析へ送ることを許可</label>
+            <p className="font-semibold">`store:false`でも、既定ではabuse monitoring logにcustomer contentが最大30日保持され得ます。ZDR/MAMは対象projectで承認・設定された場合だけ有効で、本アプリは保証済みと推測しません。</p>
+            <p>送信対象: 最大8件の確定発話、ID/source/time、redaction後text。送信しないもの: 生音声、participant metadata、file、conversation、background task、tool、analytics。text内の固有名詞はheuristic redactionで完全除去を保証しません。</p>
+            <p>Redaction preview: {preview.ok ? preview.text : '確定発話がないか、検証に失敗したため送信不能'}</p>
+          </div>
+          <div className="space-y-2 lg:col-span-2">
+            {meetingEnded && <p role="status" className="rounded bg-[#fff4d9] p-2 font-semibold text-[#76551f]">会議入力を終了しました。暗号化保持、明示export、即時削除のいずれかを確認してください。</p>}
+            <div className="flex flex-wrap gap-2"><button onClick={() => void exportCurrent()} className="rounded border px-2 py-1 font-semibold">選択したlocal pathへexport</button><button onClick={() => void deleteCurrent()} className="rounded border border-[#c8a7a0] px-2 py-1 font-semibold text-[#8b3f34]">現在sessionを即時削除</button></div>
+            {storedSessions.length > 0 && <div><b>保存session:</b> {storedSessions.slice(0, 5).map((item) => item.unreadable
+              ? <button key={item.id} onClick={() => void deleteStoredSession(item.id)} className="ml-2 rounded border border-[#c8a7a0] px-2 py-1 text-[#8b3f34]">復号不能sessionを削除</button>
+              : <button key={item.id} onClick={() => void loadSession(item.id)} className="ml-2 rounded border px-2 py-1">{new Date(item.updatedAt as string).toLocaleString()} · 発話{item.transcriptCount}件を再開</button>)}</div>}
+            <p>削除はlocal encrypted session全体が対象です。明示exportは別copyなので個別削除が必要です。OpenAI送信後の保持はlocal削除では取り消せません（現在のadapterでは送信OFF）。</p>
+          </div>
         </div>
       </details>
     </section>

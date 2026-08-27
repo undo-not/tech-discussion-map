@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -74,7 +75,8 @@ test('worker protocol parser handles split typed frames and rejects malformed da
   assert.equal(frameForWorker(1, Buffer.from([1, 2])).subarray(0, 4).toString(), 'TMI1');
 });
 
-test('companion binds as an authenticated loopback-only PCM bridge', async () => {
+test('companion binds as an authenticated loopback-only PCM bridge', async (context) => {
+  const launchSecret = 'a'.repeat(64);
   const root = await mkdtemp(join(tmpdir(), 'techmap-transcription-test-'));
   const modelRoot = join(root, 'TechMapLive', 'models');
   const modelPath = join(modelRoot, 'ggml-tiny.bin');
@@ -90,14 +92,29 @@ test('companion binds as an authenticated loopback-only PCM bridge', async () =>
     kill() { this.killed = true; this.emit('exit', 0); }
   }
   const worker = new FakeWorker();
-  const server = createCompanionServer({ environment: { LOCALAPPDATA: root }, modelPath, workerPath, spawnWorker: () => worker });
+  const server = createCompanionServer({ environment: { LOCALAPPDATA: root }, modelPath, workerPath, spawnWorker: () => worker, launchSecret });
   await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  context.after(async () => {
+    await new Promise((resolveClose) => server.close(resolveClose));
+    await rm(root, { recursive: true, force: true });
+  });
   const address = server.address();
   assert.equal(address.address, '127.0.0.1');
   const base = `http://127.0.0.1:${address.port}`;
+  const reboundStatus = await new Promise((resolveRequest, rejectRequest) => {
+    const request = httpRequest({ hostname: '127.0.0.1', port: address.port, path: '/v1/bootstrap', method: 'POST', headers: { Host: 'attacker.example', Origin: 'http://127.0.0.1:3000', 'Content-Type': 'application/json', 'Content-Length': 2 } }, (response) => {
+      response.resume();
+      response.on('end', () => resolveRequest(response.statusCode));
+    });
+    request.on('error', rejectRequest);
+    request.end('{}');
+  });
+  assert.equal(reboundStatus, 403);
   const blocked = await fetch(`${base}/v1/bootstrap`, { method: 'POST', headers: { Origin: 'https://attacker.example', 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(blocked.status, 403);
-  const bootstrap = await fetch(`${base}/v1/bootstrap`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:3000', 'Content-Type': 'application/json' }, body: '{}' });
+  const missingSecret = await fetch(`${base}/v1/bootstrap`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:3000', 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(missingSecret.status, 401);
+  const bootstrap = await fetch(`${base}/v1/bootstrap`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:3000', 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret }) });
   const { token } = await bootstrap.json();
   const headers = { Origin: 'http://127.0.0.1:3000', Authorization: `Bearer ${token}` };
   const started = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'local', sampleRate: 16000, channels: 1, encoding: 'pcm-s16le' }) });
@@ -108,6 +125,4 @@ test('companion binds as an authenticated loopback-only PCM bridge', async () =>
   assert.equal(accepted.status, 202);
   assert.equal(input.subarray(0, 4).toString(), 'TMI1');
 
-  await new Promise((resolveClose) => server.close(resolveClose));
-  await rm(root, { recursive: true, force: true });
 });
