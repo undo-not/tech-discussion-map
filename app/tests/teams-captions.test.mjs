@@ -89,6 +89,8 @@ test('local Tesseract is hash-pinned and runs in a bounded job through memory pi
   assert.match(runtime, /Sha256File\(paths\.japanese\)/);
   assert.match(runtime, /Sha256File\(paths\.english\)/);
   assert.match(runtime, /stdin stdout --tessdata-dir/);
+  assert.match(runtime, /-c tessedit_create_tsv=1/);
+  assert.doesNotMatch(runtime, /debug_file=NUL tsv/);
   assert.match(runtime, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/);
   assert.match(runtime, /CREATE_SUSPENDED/);
   assert.match(runtime, /AssignProcessToJobObject/);
@@ -98,6 +100,36 @@ test('local Tesseract is hash-pinned and runs in a bounded job through memory pi
   assert.match(setup, /Get-FileHash/);
   assert.match(setup, /Expected Tesseract \$expectedVersion after hash verification/);
   assert.doesNotMatch(setup, /Invoke-WebRequest|Start-BitsTransfer/);
+});
+
+test('attested Tesseract build pins source, dependencies, models, and main workflow provenance', async () => {
+  const root = resolve(testDirectory, '..', '..');
+  const build = await readFile(resolve(root, 'scripts', 'build-tesseract-runtime.ps1'), 'utf8');
+  const install = await readFile(resolve(root, 'scripts', 'install-attested-tesseract.ps1'), 'utf8');
+  const workflow = await readFile(resolve(root, '.github', 'workflows', 'tesseract-runtime.yml'), 'utf8');
+  const manifest = await readFile(resolve(root, 'scripts', 'tesseract-runtime', 'vcpkg.json'), 'utf8');
+  for (const source of [build, install]) {
+    assert.match(source, /db0ec62f81b0737fbbe184d8fea40af5738f8eef/);
+    assert.match(source, /ddd0023b0eee70986e42ed49d9d4afb8098f212e/);
+    assert.match(source, /87416418657359cb625c412a48b6e1d6d41c29bd/);
+    assert.match(source, /1f5de9236d2e85f5fdf4b3c500f2d4926f8d9449f28f5394472d9e8d83b91b4d/);
+    assert.match(source, /7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2/);
+  }
+  assert.match(build, /Assert-Hash \$archive 'SHA512'/);
+  assert.match(build, /x64-windows-static/);
+  assert.match(build, /Built runtime is not self-contained outside the build environment/);
+  assert.match(build, /licenses/);
+  assert.match(build, /Leptonica license is missing/);
+  assert.match(install, /attestation verify/);
+  assert.match(install, /--signer-workflow \$signerWorkflow/);
+  assert.match(install, /--source-ref 'refs\/heads\/main'/);
+  assert.match(install, /--deny-self-hosted-runners/);
+  assert.match(install, /GitHub CLI must have a valid GitHub, Inc. Authenticode signature/);
+  assert.doesNotMatch(install, /Get-Command gh/);
+  assert.doesNotMatch(install, /Invoke-WebRequest|Start-BitsTransfer/);
+  assert.match(workflow, /actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6/);
+  assert.match(workflow, /runs-on: windows-2025/);
+  assert.match(manifest, /"builtin-baseline": "ddd0023b0eee70986e42ed49d9d4afb8098f212e"/);
 });
 
 test('raw OCR names and TSV are anonymized before framed output', async () => {

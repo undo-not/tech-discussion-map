@@ -1,0 +1,55 @@
+name: Attested Tesseract runtime
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tesseract-runtime.yml'
+      - 'scripts/build-tesseract-runtime.ps1'
+      - 'scripts/install-attested-tesseract.ps1'
+      - 'scripts/setup-tesseract.ps1'
+      - 'scripts/tesseract-runtime/**'
+      - 'native/teams-captions/**'
+      - 'app/tests/teams-captions.test.mjs'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tesseract-runtime.yml'
+      - 'scripts/build-tesseract-runtime.ps1'
+      - 'scripts/install-attested-tesseract.ps1'
+      - 'scripts/setup-tesseract.ps1'
+      - 'scripts/tesseract-runtime/**'
+      - 'native/teams-captions/**'
+      - 'app/tests/teams-captions.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-tesseract-runtime:
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Build pinned static OCR runtime
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-tesseract-runtime.ps1 -OutputDirectory "$env:RUNNER_TEMP\techmap-ocr-runtime"
+      - name: Package runtime without repository persistence
+        shell: powershell
+        run: Compress-Archive -Path "$env:RUNNER_TEMP\techmap-ocr-runtime\*" -DestinationPath "$env:RUNNER_TEMP\techmap-ocr-runtime-windows-x64.zip"
+      - name: Attest runtime provenance
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: '${{ runner.temp }}/techmap-ocr-runtime-windows-x64.zip'
+      - name: Upload ephemeral runtime artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: techmap-ocr-runtime-windows-x64
+          path: '${{ runner.temp }}/techmap-ocr-runtime-windows-x64.zip'
+          if-no-files-found: error
+          retention-days: 7
