@@ -15,7 +15,16 @@ import { createPrivacySafeStructuredResponsesRequest } from '../adapters/privacy
 import { analysisStructuredOutput } from '../domain/analysis/schema.ts';
 import { redactText } from '../domain/privacy/redaction.ts';
 import { transitionTranscriptionSession } from '../domain/transcription/session.ts';
-import { adoptStartedInput, beginInputStart, cancelInputStart, createInputStartGate, finishInputStart } from '../domain/transcription/input-start-gate.ts';
+import {
+  adoptStartedInput,
+  beginInputStart,
+  cancelInputStart,
+  createInputStartGate,
+  finishInputStart,
+  inputAttemptControlsState,
+  inputAttemptOwnsSession,
+  releaseInputAttempt,
+} from '../domain/transcription/input-start-gate.ts';
 import { applyTranscriptEvent, emptyTranscriptState } from '../domain/transcription/utterance.ts';
 import { createCompanionServer, frameForWorker, parseWorkerEvents } from '../../companion/local-transcription-host.mjs';
 
@@ -66,8 +75,35 @@ test('only one input start can be pending and a cancelled completion is stopped 
   const retry = beginInputStart(gate);
   assert.equal(await adoptStartedInput(gate, retry, { async stop() { stopped += 1; } }, () => true, () => { adopted += 1; }), true);
   finishInputStart(gate, retry);
+  assert.equal(inputAttemptOwnsSession(gate, retry), true);
+  assert.equal(beginInputStart(gate), null, 'an adopted session remains exclusive after startup finishes');
+  releaseInputAttempt(gate, retry);
   assert.equal(adopted, 1);
   assert.equal(stopped, 1);
+});
+
+test('a cancelled old attempt cannot mutate or deliver into its replacement session', async () => {
+  const gate = createInputStartGate();
+  const oldAttempt = beginInputStart(gate);
+  const oldInput = { async stop() {} };
+  assert.equal(await adoptStartedInput(gate, oldAttempt, oldInput, () => true, () => undefined), true);
+  cancelInputStart(gate);
+
+  const replacementAttempt = beginInputStart(gate);
+  const replacementInput = { async stop() {} };
+  let activeInput = replacementInput;
+  assert.equal(await adoptStartedInput(gate, replacementAttempt, replacementInput, () => true, () => undefined), true);
+  finishInputStart(gate, replacementAttempt);
+
+  let state = 'replacement-listening';
+  if (inputAttemptControlsState(gate, oldAttempt)) state = 'stopped-by-old-catch';
+  let delivered = 0;
+  if (inputAttemptOwnsSession(gate, oldAttempt) && activeInput === oldInput) delivered += 1;
+
+  assert.equal(state, 'replacement-listening');
+  assert.equal(delivered, 0);
+  assert.equal(inputAttemptOwnsSession(gate, replacementAttempt), true);
+  assert.equal(activeInput, replacementInput);
 });
 
 test('Teams PCM downmixes and decimates to the shared 16 kHz transcription port', () => {
@@ -92,6 +128,15 @@ test('microphone adapter has no network or persistence sink', async () => {
   const source = await readFile(resolve(testDirectory, '..', 'adapters', 'audio', 'browser-microphone.ts'), 'utf8');
   assert.match(source, /getUserMedia/);
   assert.doesNotMatch(source, /fetch\s*\(|WebSocket|sendBeacon|indexedDB|localStorage|FileSystem/);
+});
+
+test('stopped transcription clients discard delayed poll batches before callbacks', async () => {
+  const testDirectory = fileURLToPath(new URL('.', import.meta.url));
+  for (const file of ['local-companion-client.ts', 'local-caption-client.ts']) {
+    const source = await readFile(resolve(testDirectory, '..', 'adapters', 'transcription', file), 'utf8');
+    assert.match(source, /if \(this\.#closed\) return;[\s\S]{0,300}for \(const event of value\.events\)/);
+    assert.match(source, /for \(const event of value\.events\) \{\s+if \(this\.#closed\) return;/);
+  }
 });
 
 test('worker protocol parser handles split typed frames and rejects malformed data', () => {

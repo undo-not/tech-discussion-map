@@ -15,7 +15,17 @@ import { createMinimalUtteranceWindow } from '@/domain/privacy/redaction.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
 import { createRedactedAnalysisInput } from '@/domain/analysis/prompt.ts';
 import { transitionTranscriptionSession, type TranscriptionSessionEvent, type TranscriptionSessionState } from '@/domain/transcription/session.ts';
-import { adoptStartedInput, beginInputStart, cancelInputStart, createInputStartGate, finishInputStart, inputStartIsCurrent } from '@/domain/transcription/input-start-gate.ts';
+import {
+  adoptStartedInput,
+  beginInputStart,
+  cancelInputStart,
+  createInputStartGate,
+  finishInputStart,
+  inputAttemptControlsState,
+  inputAttemptOwnsSession,
+  inputStartIsCurrent,
+  releaseInputAttempt,
+} from '@/domain/transcription/input-start-gate.ts';
 import { applyCaptionSourceEvent, emptyCaptionAssemblerState, transitionCaptionSource, type CaptionAssemblerState, type CaptionSourceSessionEvent, type CaptionSourceState } from '@/domain/transcription/caption-source.ts';
 import { applyTranscriptEvent, emptyTranscriptState, type TranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
 
@@ -316,24 +326,38 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setMessage('同意確認済み。Teamsを前面表示すると字幕領域の選択overlayを開きます。');
     let client: LocalCaptionClient | null = null;
     try {
-      client = new LocalCaptionClient(handleCaptionRuntimeEvent);
-      client.onFailure = () => {
+      let callbackClient: LocalCaptionClient | null = null;
+      let clientFailed = false;
+      const createdClient = new LocalCaptionClient((event) => {
+        if (!callbackClient || captionClient.current !== callbackClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        handleCaptionRuntimeEvent(event);
+      });
+      callbackClient = createdClient;
+      client = createdClient;
+      createdClient.onFailure = () => {
+        clientFailed = true;
+        if (captionClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
         const state = captionAssemblerRef.current.sourceState;
         captionClient.current = null;
+        releaseInputAttempt(inputStartGateRef.current, attempt);
         setInputMode('none');
         dispatch({ type: 'engine-unavailable' });
         if (!state.startsWith('degraded-')) setMessage('字幕OCR workerが停止しました。画像bufferは破棄済みです。');
       };
-      await client.start();
-      const adopted = await adoptStartedInput(inputStartGateRef.current, attempt, client,
-        () => consentAllowedRef.current && !hasActiveInput(), (value) => { captionClient.current = value; });
+      await createdClient.start();
+      const adopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdClient,
+        () => !clientFailed && consentAllowedRef.current && !hasActiveInput(), (value) => { captionClient.current = value; });
       if (!adopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      if (clientFailed || captionClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('caption-engine-failed-during-start');
       client = null;
       setInputMode('teams-caption');
       dispatch({ type: 'started' });
     } catch (error) {
       await client?.stop().catch(() => undefined);
-      captionClient.current = null; setInputMode('none');
+      if (!inputAttemptControlsState(inputStartGateRef.current, attempt)) return;
+      if (captionClient.current === client) captionClient.current = null;
+      releaseInputAttempt(inputStartGateRef.current, attempt);
+      setInputMode('none');
       if (error instanceof Error && (error.message === 'consent-revoked' || error.message === 'input-start-cancelled')) { dispatch({ type: 'stop' }); setMessage('入力開始が取り消されたためcaptureを開始しませんでした。'); return; }
       dispatch({ type: 'engine-unavailable' });
       setMessage('caption helperまたは固定hash検証済みTesseract 5.5.3を確認してください。画面は取得していません。');
@@ -373,16 +397,28 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     let client: LocalCompanionTranscriptionClient | null = null;
     try {
       let ready = false;
-      const createdClient = new LocalCompanionTranscriptionClient('local', receive);
+      let callbackClient: LocalCompanionTranscriptionClient | null = null;
+      let clientFailed = false;
+      const createdClient = new LocalCompanionTranscriptionClient('local', (event) => {
+        if (!callbackClient || localClient.current !== callbackClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        receive(event);
+      });
+      callbackClient = createdClient;
       client = createdClient;
       createdClient.onFailure = () => {
-        void microphone.current?.stop(); microphone.current = null;
+        clientFailed = true;
+        if (localClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        const ownedCapture = microphone.current;
+        microphone.current = null;
         localClient.current = null;
         setInputMode('none');
         dispatch({ type: 'engine-unavailable' });
         setMessage('ローカル音声認識が停止し、以後の音声は取得されません。合成デモへ切り替えられます。');
+        void Promise.resolve(ownedCapture?.stop()).catch(() => undefined).finally(() => releaseInputAttempt(inputStartGateRef.current, attempt));
       };
-      capture = await startMicrophoneCapture(deviceId || undefined, (samples) => { if (ready) void createdClient.sendPcm(samples).catch(() => undefined); });
+      capture = await startMicrophoneCapture(deviceId || undefined, (samples) => {
+        if (ready && localClient.current === createdClient && inputAttemptOwnsSession(inputStartGateRef.current, attempt)) void createdClient.sendPcm(samples).catch(() => undefined);
+      });
       const microphoneAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, capture,
         () => consentAllowedRef.current && !hasActiveInput(), (value) => { microphone.current = value; });
       if (!microphoneAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
@@ -390,16 +426,22 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       dispatch({ type: 'permission-granted' });
       await createdClient.start();
       const clientAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdClient,
-        () => consentAllowedRef.current && microphone.current === capture && localClient.current === null && captionClient.current === null && synthetic.current === null,
+        () => !clientFailed && consentAllowedRef.current && microphone.current === capture && localClient.current === null && captionClient.current === null && synthetic.current === null,
         (value) => { localClient.current = value; });
       if (!clientAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      if (clientFailed || localClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('local-engine-failed-during-start');
       ready = true;
       dispatch({ type: 'started' });
       setMessage('生音声はmemory内だけで処理され、PC外にもdiskにも送られません。');
       void listMicrophones().then(setDevices).catch(() => setDevices([]));
     } catch (error) {
       if (microphone.current === capture) microphone.current = null;
-      await capture?.stop().catch(() => undefined); await client?.stop().catch(() => undefined); localClient.current = null; setInputMode('none');
+      if (localClient.current === client) localClient.current = null;
+      await capture?.stop().catch(() => undefined);
+      await client?.stop().catch(() => undefined);
+      if (!inputAttemptControlsState(inputStartGateRef.current, attempt)) return;
+      releaseInputAttempt(inputStartGateRef.current, attempt);
+      setInputMode('none');
       if (error instanceof Error && (error.message === 'consent-revoked' || error.message === 'input-start-cancelled')) { dispatch({ type: 'stop' }); setMessage('入力開始が取り消されたためcaptureを開始しませんでした。'); return; }
       const denied = error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
       dispatch({ type: denied ? 'permission-denied' : error instanceof DOMException ? 'device-unavailable' : 'engine-unavailable' });

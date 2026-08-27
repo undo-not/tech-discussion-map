@@ -106,8 +106,12 @@ export class LocalCompanionTranscriptionClient {
           cache: 'no-store',
         });
         const value = await readJson(response) as { cursor?: unknown; events?: unknown; stopped?: unknown };
+        if (this.#closed) return;
         if (!Number.isSafeInteger(value.cursor) || !Array.isArray(value.events) || typeof value.stopped !== 'boolean') throw new Error('local-engine-invalid-events');
-        for (const event of value.events) this.#onUtterance(parseTranscriptUtterance(event));
+        for (const event of value.events) {
+          if (this.#closed) return;
+          this.#onUtterance(parseTranscriptUtterance(event));
+        }
         this.#cursor = value.cursor as number;
         if (value.stopped && !this.#closed) {
           this.#fail('local-engine-stopped');
