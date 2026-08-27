@@ -6,7 +6,7 @@ The workspace projects the versioned `AnalysisState` into an editable live map w
 
 ## Stable layout and degraded display
 
-Nodes are assigned to deterministic kind lanes. A node keeps its first assigned position even when other nodes are added, withdrawn, filtered, or restored; vacated positions are not compacted within a session. The viewport does not move for analysis updates, but explicit keyboard navigation scrolls the focused node into view. At most the latest 100 matching nodes are rendered, with an explicit degraded-display notice and search/type filters when more exist. This bound limits DOM and edge work while retaining the full validated analysis state. Starting another empty session resets both history and retained layout slots.
+Nodes are assigned to deterministic kind lanes. A node keeps its first assigned position even when other nodes are added, withdrawn, filtered, or restored; vacated positions are not compacted within a session. The viewport does not move for ordinary analysis updates, but explicit keyboard navigation scrolls the focused node into view. At most the latest 100 matching nodes are rendered, with an explicit degraded-display notice and search/type filters when more exist. If none of those 100 nodes intersects the current viewport, the viewport moves once to their earliest visible position instead of presenting an empty canvas. This bound limits DOM and edge work while retaining the full validated analysis state. Starting, deleting, or loading a session increments a local workspace generation, remounting the map so both history and retained layout slots reset regardless of the loaded analysis revision.
 
 ## Human authority and history
 
@@ -20,4 +20,4 @@ Every rendered node is a keyboard-focusable button with a roving tab stop. Arrow
 
 ## Verification
 
-Pure domain tests cover stable placement with 100 nodes, deterministic allocation for new nodes, bounded unified undo/redo, forward-only revision behavior, rejection of an AI overwrite after human confirmation, suppression of duplicate mock nodes after confirmation, selection replacement, and the scroll target for distant keyboard navigation. The app gate also runs typecheck, lint, production build, privacy checks, and the existing native Windows CI jobs.
+Pure domain tests cover stable placement with 100 nodes, deterministic allocation for new nodes, bounded unified undo/redo, forward-only revision behavior, rejection of an AI overwrite after human confirmation, suppression of duplicate mock nodes after confirmation, selection replacement, the scroll target for distant keyboard navigation, a mixed 300-node degraded viewport, and fresh slots for a loaded session. The app gate also runs typecheck, lint, production build, privacy checks, and the existing native Windows CI jobs.

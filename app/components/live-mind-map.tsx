@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { AnalysisItem, AnalysisKind, AnalysisState } from '@/domain/analysis/contract.ts';
-import { latestRenderedMapItems, mapCanvasHeight, mapNodeHeight, mapNodeWidth, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, resetMapLayout, scrollTargetForNode, visibleSelectionId, type HumanItemPatch, type MapLayout } from '@/domain/mind-map/workspace.ts';
+import { latestRenderedMapItems, mapCanvasHeight, mapNodeHeight, mapNodeWidth, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, visibleSelectionId, type HumanItemPatch, type MapLayout } from '@/domain/mind-map/workspace.ts';
 
 const kindLabels: Record<AnalysisKind, string> = { topic: '論点', claim: '主張', question: '質問', decision: '決定', action: 'Action', dependency: '依存', risk: 'リスク' };
 const kindStyles: Record<AnalysisKind, string> = {
@@ -32,6 +32,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   const [draftDetail, setDraftDetail] = useState('');
   const [editError, setEditError] = useState('');
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
   const lastFocusedNodeRef = useRef('');
 
   useEffect(() => {
@@ -55,6 +56,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   const canvasHeight = mapCanvasHeight(renderedLayout, visibleIds);
 
   const focusNode = (id: string) => {
+    setEditError('');
     setSelectedId(id);
     requestAnimationFrame(() => {
       const node = document.getElementById(`map-node-${id}`);
@@ -70,12 +72,36 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   useEffect(() => {
     const nextId = visibleSelectionId(selectedId, visibleItems.map((item) => item.id));
     if (nextId === selectedId) return;
-    const shouldRestoreFocus = lastFocusedNodeRef.current === selectedId && document.activeElement === document.body;
-    const frame = requestAnimationFrame(() => shouldRestoreFocus && nextId ? focusNode(nextId) : setSelectedId(nextId));
+    const shouldRestoreFocus = lastFocusedNodeRef.current !== '' && lastFocusedNodeRef.current === selectedId && document.activeElement === document.body;
+    const frame = requestAnimationFrame(() => {
+      setEditError('');
+      if (shouldRestoreFocus && nextId) focusNode(nextId);
+      else setSelectedId(nextId);
+    });
     return () => cancelAnimationFrame(frame);
     // focusNode intentionally uses the latest rendered layout and zoom for a user-visible selection replacement.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, visibleItems]);
+
+  useEffect(() => {
+    if (!degraded) return;
+    const frame = requestAnimationFrame(() => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      const target = scrollTargetForVisibleItems({ scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop, width: viewport.clientWidth, height: viewport.clientHeight }, visibleItems.map((item) => item.id), renderedLayout, zoom);
+      if (target && (target.left !== viewport.scrollLeft || target.top !== viewport.scrollTop)) viewport.scrollTo({ left: target.left, top: target.top, behavior: 'auto' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [degraded, renderedLayout, visibleItems, zoom]);
+
+  const beginEditing = (item: AnalysisItem) => {
+    setSelectedId(item.id);
+    setDraftTitle(item.title);
+    setDraftDetail(item.detail);
+    setEditError('');
+    setEditing(true);
+    requestAnimationFrame(() => titleInputRef.current?.focus());
+  };
   const handleNodeKey = (event: KeyboardEvent<HTMLButtonElement>, item: AnalysisItem) => {
     const directions = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' } as const;
     if (event.key in directions) {
@@ -83,7 +109,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
       focusNode(nearestNodeId(item.id, directions[event.key as keyof typeof directions], visibleItems.map((candidate) => candidate.id), renderedLayout));
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'e') {
       event.preventDefault();
-      setSelectedId(item.id); setDraftTitle(item.title); setDraftDetail(item.detail); setEditError(''); setEditing(true);
+      beginEditing(item);
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'c' && item.provenance === 'ai-suggested') {
       event.preventDefault();
       setEditError(onPatchItem(item.id, { confirm: true }) ? '' : '確認を保存できませんでした。nodeの根拠と状態を確認してください。');
@@ -91,7 +117,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   };
   const beginEdit = () => {
     if (!selected) return;
-    setDraftTitle(selected.title); setDraftDetail(selected.detail); setEditError(''); setEditing(true);
+    beginEditing(selected);
   };
   const submitEdit = () => {
     if (!selected) return;
@@ -131,7 +157,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
           </svg>
           {visibleItems.map((item) => {
             const position = renderedLayout.positions[item.id] ?? { x: 0, y: 0 };
-            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => setSelectedId(item.id)} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
+            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => { setEditError(''); setSelectedId(item.id); }} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
               <span className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase"><span>{kindLabels[item.kind]} · {item.status}</span><span className={item.provenance === 'ai-suggested' ? 'text-[#8a5a16]' : 'text-[#176044]'}>{provenanceLabel[item.provenance]}</span></span>
               <strong className="mt-1 block line-clamp-2 text-sm">{item.title}</strong>
               <span className="mt-1 block truncate text-[10px] text-[#52615c]">根拠 {item.evidenceUtteranceIds.join(' · ')}</span>
@@ -143,9 +169,9 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
 
       {selected && <aside aria-label="選択nodeの詳細" className="z-20 border-t border-[#d2dad4] bg-white/95 p-3 text-xs">
         {editing ? <div onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setEditError(''); setEditing(false); } }} className="grid gap-2 md:grid-cols-[1fr_2fr_auto]">
-          <input aria-label="node title" value={draftTitle} maxLength={160} onChange={(event) => setDraftTitle(event.target.value)} className="rounded border px-2 py-1" />
+          <input ref={titleInputRef} aria-label="node title" value={draftTitle} maxLength={160} onChange={(event) => setDraftTitle(event.target.value)} className="rounded border px-2 py-1" />
           <div><input aria-label="node detail" value={draftDetail} maxLength={600} onChange={(event) => setDraftDetail(event.target.value)} className="w-full rounded border px-2 py-1" /><p className="mt-1 text-[10px] text-[#76551f]">OpenAI分析を許可している場合、この編集内容もredaction後の次回contextに含まれます。社外秘の固有名詞は入力前に確認してください。</p></div>
-          <div className="flex gap-1"><button disabled={!draftTitle.trim() || !draftDetail.trim()} onClick={submitEdit} className="rounded bg-[#153f38] px-3 py-1 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">保存</button><button onClick={() => setEditing(false)} className="rounded border px-3 py-1">取消</button></div>
+          <div className="flex gap-1"><button disabled={!draftTitle.trim() || !draftDetail.trim()} onClick={submitEdit} className="rounded bg-[#153f38] px-3 py-1 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">保存</button><button onClick={() => { setEditError(''); setEditing(false); }} className="rounded border px-3 py-1">取消</button></div>
           {editError && <p role="alert" className="text-[#a23f32] md:col-span-3">{editError}</p>}
         </div> : <div className="flex flex-wrap items-center gap-2"><b>{selected.title}</b><span>{selected.detail}</span><span className="text-[#52615c]">根拠 {selected.evidenceUtteranceIds.join(' · ')}</span><button onClick={beginEdit} className="ml-auto rounded border px-2 py-1 font-semibold">編集</button>{selected.provenance === 'ai-suggested' && <button onClick={() => setEditError(onPatchItem(selected.id, { confirm: true }) ? '' : '確認を保存できませんでした。nodeの根拠と状態を確認してください。')} className="rounded bg-[#176044] px-2 py-1 font-semibold text-white">AI提案を確認</button>}{editError && <span role="alert" className="w-full text-[#a23f32]">{editError}</span>}</div>}
       </aside>}

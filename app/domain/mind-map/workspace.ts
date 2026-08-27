@@ -59,11 +59,15 @@ export function applyHumanItemPatch(state: AnalysisState, itemId: string, patch:
   const next = structuredClone(state);
   const item = next.items.find((candidate) => candidate.id === itemId);
   if (!item) throw new Error('mind-map-unknown-item');
-  if (patch.title !== undefined) item.title = patch.title.trim();
-  if (patch.detail !== undefined) item.detail = patch.detail.trim();
+  const title = patch.title?.trim();
+  const detail = patch.detail?.trim();
+  const edited = (title !== undefined && title !== item.title) || (detail !== undefined && detail !== item.detail) || (patch.status !== undefined && patch.status !== item.status);
+  const confirmed = patch.confirm === true && item.provenance === 'ai-suggested';
+  if (!edited && !confirmed) return structuredClone(state);
+  if (title !== undefined) item.title = title;
+  if (detail !== undefined) item.detail = detail;
   if (patch.status !== undefined) item.status = patch.status;
-  const edited = patch.title !== undefined || patch.detail !== undefined || patch.status !== undefined;
-  item.provenance = edited ? 'human-edited' : patch.confirm ? 'human-confirmed' : item.provenance;
+  item.provenance = edited ? 'human-edited' : 'human-confirmed';
   next.revision += 1;
   return validateAnalysisState(next, utterances);
 }
@@ -133,4 +137,19 @@ export function scrollTargetForNode(viewport: MapViewport, position: MapPosition
   if (nodeTop < viewport.scrollTop + padding) top = nodeTop - padding;
   else if (nodeBottom > viewport.scrollTop + viewport.height - padding) top = nodeBottom - viewport.height + padding;
   return { left: Math.max(0, Math.round(left)), top: Math.max(0, Math.round(top)) };
+}
+
+export function scrollTargetForVisibleItems(viewport: MapViewport, itemIds: string[], layout: MapLayout, zoom: number): { left: number; top: number } | null {
+  const positions = itemIds.map((id) => layout.positions[id]).filter((position): position is MapPosition => Boolean(position));
+  if (positions.length === 0) return null;
+  const viewportRight = viewport.scrollLeft + viewport.width;
+  const viewportBottom = viewport.scrollTop + viewport.height;
+  const intersects = positions.some((position) => {
+    const left = position.x * zoom;
+    const top = position.y * zoom;
+    return left < viewportRight && (position.x + mapNodeWidth) * zoom > viewport.scrollLeft && top < viewportBottom && (position.y + mapNodeHeight) * zoom > viewport.scrollTop;
+  });
+  if (intersects) return { left: viewport.scrollLeft, top: viewport.scrollTop };
+  const first = [...positions].sort((left, right) => left.y - right.y || left.x - right.x)[0];
+  return scrollTargetForNode(viewport, first, zoom);
 }

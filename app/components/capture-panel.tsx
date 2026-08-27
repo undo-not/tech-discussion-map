@@ -28,7 +28,7 @@ const subscribeRuntime = () => () => undefined;
 export type CapturePanelProps = {
   analysisState: AnalysisState;
   getAnalysisState: () => AnalysisState;
-  onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean }) => void;
+  onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean; resetLayout?: boolean }) => void;
   onTranscriptChange?: (state: TranscriptState) => void;
 };
 
@@ -80,7 +80,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
 
   const publishAnalysisState = (state: AnalysisState, resetHistory = false) => {
     analysisStateRef.current = state;
-    onAnalysisStateChange(state, { resetHistory });
+    onAnalysisStateChange(state, { resetHistory, resetLayout: resetHistory });
   };
   const publishTranscriptState = (state: TranscriptState) => {
     transcriptRef.current = state;

@@ -3,9 +3,9 @@ import { test } from 'node:test';
 
 import { analyzeWithDeterministicMock } from '../adapters/analysis/mock-analyzer.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState } from '../domain/analysis/contract.ts';
-import { applyHumanItemPatch, commitAnalysisHistory, createAnalysisHistory, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
+import { applyHumanItemPatch, commitAnalysisHistory, createAnalysisHistory, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
 
-const utterances = Array.from({ length: 101 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
+const utterances = Array.from({ length: 300 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
 const kinds = ['topic', 'claim', 'question', 'decision', 'action', 'dependency', 'risk'];
 
 function stateWithNodes(count, revision = 0) {
@@ -76,6 +76,7 @@ test('human patches retain validator boundaries and session reset clears history
   const state = stateWithNodes(1);
   assert.throws(() => applyHumanItemPatch(state, 'map-node-0', { title: '   ' }, utterances), /analysis-invalid-item/);
   assert.throws(() => applyHumanItemPatch(state, 'missing-node', { confirm: true }, utterances), /mind-map-unknown-item/);
+  assert.equal(applyHumanItemPatch(state, 'map-node-0', { title: state.items[0].title, detail: state.items[0].detail }, utterances).revision, state.revision);
 
   let history = createAnalysisHistory(state);
   for (let index = 0; index < maximumHistoryEntries + 5; index += 1) {
@@ -118,4 +119,28 @@ test('keyboard selection replacement and scroll target keep a distant node visib
   assert.equal(latest.length, maximumRenderedNodes);
   assert.equal(latest[0].id, 'map-node-1');
   assert.equal(latest.at(-1).id, 'map-node-100');
+});
+
+test('degraded 300-node display scrolls to recent nodes only when none intersects the viewport', () => {
+  const state = stateWithNodes(300);
+  const layout = reconcileMapLayout(resetMapLayout(), state);
+  const latest = latestRenderedMapItems(state.items);
+  const viewport = { scrollLeft: 0, scrollTop: 0, width: 520, height: 620 };
+  const target = scrollTargetForVisibleItems(viewport, latest.map((item) => item.id), layout, 1);
+  assert.ok(target);
+  assert.ok(target.top > 0);
+  const positions = latest.map((item) => layout.positions[item.id]);
+  assert.ok(positions.some((position) => position.y < target.top + viewport.height && position.y + mapNodeHeight > target.top));
+  const unchanged = scrollTargetForVisibleItems({ ...viewport, scrollLeft: target.left, scrollTop: target.top }, latest.map((item) => item.id), layout, 1);
+  assert.deepEqual(unchanged, target);
+});
+
+test('a loaded session starts from fresh layout slots after the session generation reset', () => {
+  const previous = reconcileMapLayout(resetMapLayout(), stateWithNodes(60));
+  assert.ok(Object.keys(previous.positions).length > 0);
+  const loaded = stateWithNodes(4);
+  loaded.items.forEach((item, index) => { item.id = `loaded-node-${index}`; });
+  const fresh = reconcileMapLayout(resetMapLayout(), validateAnalysisState(loaded, utterances));
+  assert.equal(Math.min(...Object.values(fresh.positions).map((position) => position.y)), 92);
+  assert.equal(Object.keys(fresh.positions).some((id) => id.startsWith('map-node-')), false);
 });

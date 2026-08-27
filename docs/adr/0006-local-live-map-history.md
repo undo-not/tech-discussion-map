@@ -6,7 +6,7 @@ Analysis updates arrive while an operator may be navigating, confirming, or edit
 
 ## Decision
 
-Keep stable lane-slot coordinates and bounded snapshot history in the local workspace layer. Apply human changes through a separate validator-backed function. Undo and redo restore items as a new higher revision while retaining the applied-delta audit log. Reject an in-flight delta when its captured revision is stale and require an explicit re-analysis action.
+Keep stable lane-slot coordinates and bounded snapshot history in the local workspace layer. Apply human changes through a separate validator-backed function. Undo and redo restore items as a new higher revision while retaining the applied-delta audit log. Reject an in-flight delta when its captured revision is stale and require an explicit re-analysis action. Treat every start, delete, and saved-session load as a new local workspace generation so React remounts the map and discards prior layout slots independently of analysis revision.
 
 ## Consequences
 

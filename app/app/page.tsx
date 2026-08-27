@@ -16,23 +16,29 @@ export default function Home() {
   const [visibleCount, setVisibleCount] = useState(workspace.transcript.length);
   const [analysisHistory, setAnalysisHistory] = useState(() => createAnalysisHistory(emptyAnalysisState));
   const analysisHistoryRef = useRef(analysisHistory);
+  const [mapSessionGeneration, setMapSessionGeneration] = useState(0);
   const [liveTranscript, setLiveTranscript] = useState<TranscriptState>(emptyTranscriptState);
 
-  const receiveAnalysisState = useCallback((state: AnalysisState, options?: { resetHistory?: boolean }) => {
+  const receiveAnalysisState = useCallback((state: AnalysisState, options?: { resetHistory?: boolean; resetLayout?: boolean }) => {
     const next = commitAnalysisHistory(analysisHistoryRef.current, state, options?.resetHistory);
     analysisHistoryRef.current = next;
     setAnalysisHistory(next);
+    if (options?.resetLayout) setMapSessionGeneration((generation) => generation + 1);
   }, []);
   const getAnalysisState = useCallback(() => analysisHistoryRef.current.present, []);
   const undoMap = useCallback(() => {
-    const next = undoAnalysisHistory(analysisHistoryRef.current, liveTranscript.utterances);
-    analysisHistoryRef.current = next;
-    setAnalysisHistory(next);
+    try {
+      const next = undoAnalysisHistory(analysisHistoryRef.current, liveTranscript.utterances);
+      analysisHistoryRef.current = next;
+      setAnalysisHistory(next);
+    } catch { /* fail closed: keep the current validated workspace */ }
   }, [liveTranscript]);
   const redoMap = useCallback(() => {
-    const next = redoAnalysisHistory(analysisHistoryRef.current, liveTranscript.utterances);
-    analysisHistoryRef.current = next;
-    setAnalysisHistory(next);
+    try {
+      const next = redoAnalysisHistory(analysisHistoryRef.current, liveTranscript.utterances);
+      analysisHistoryRef.current = next;
+      setAnalysisHistory(next);
+    } catch { /* fail closed: keep the current validated workspace */ }
   }, [liveTranscript]);
   const patchMapItem = useCallback((itemId: string, patch: HumanItemPatch) => {
     try {
@@ -113,7 +119,7 @@ export default function Home() {
           <div className="border-t border-[#e2e5e0] p-3"><div className="flex items-center justify-between rounded-xl bg-[#eef3ef] px-3 py-2.5"><span className="text-xs font-medium text-[#4b5c57]">入力：デモ会話</span><span className="text-xs text-[#5c6a66]">音声は保存されません</span></div></div>
         </aside>
 
-        <LiveMindMap analysisState={analysisHistory.present} canUndo={analysisHistory.past.length > 0} canRedo={analysisHistory.future.length > 0} onUndo={undoMap} onRedo={redoMap} onPatchItem={patchMapItem} />
+        <LiveMindMap key={mapSessionGeneration} analysisState={analysisHistory.present} canUndo={analysisHistory.past.length > 0} canRedo={analysisHistory.future.length > 0} onUndo={undoMap} onRedo={redoMap} onPatchItem={patchMapItem} />
 
         <aside className="flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-[#d9ded8] bg-[#fbfaf7] shadow-[0_8px_30px_rgba(35,54,49,0.05)] xl:min-h-0">
           <div className="border-b border-[#e2e5e0] px-4 py-3"><h2 className="text-sm font-semibold">会議インサイト</h2><p className="mt-0.5 text-xs text-[#5c6a66]">重要な変化を自動検出</p></div>
