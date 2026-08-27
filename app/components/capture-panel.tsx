@@ -49,6 +49,8 @@ export function CapturePanel() {
   const sessionCreatedAtRef = useRef('');
   const persistenceChain = useRef<Promise<void>>(Promise.resolve());
   const persistedSessionRef = useRef(false);
+  const persistenceMayExistRef = useRef(false);
+  const sessionWriteBlockedRef = useRef(false);
   const saveLocallyRef = useRef(false);
   const retentionDaysRef = useRef<RetentionDays>(7);
   const dataControlsAttestedRef = useRef(false);
@@ -98,10 +100,15 @@ export function CapturePanel() {
   };
 
   const persistSnapshot = (state: TranscriptState) => {
-    if (!saveLocallyRef.current) return;
+    if (!saveLocallyRef.current || sessionWriteBlockedRef.current) return;
     const value = snapshot(state);
     if (!value) return;
-    persistenceChain.current = persistenceChain.current.then(async () => { await (await connectPrivacy()).save(value); persistedSessionRef.current = true; }).catch(() => {
+    persistenceMayExistRef.current = true;
+    persistenceChain.current = persistenceChain.current.then(async () => {
+      if (sessionWriteBlockedRef.current || value.id !== sessionIdRef.current) return;
+      await (await connectPrivacy()).save(value);
+      persistedSessionRef.current = true;
+    }).catch(() => {
       saveLocallyRef.current = false;
       setSaveLocally(false);
       setMessage('保護された保存に失敗したためmemory-onlyへ切り替えました。以前の暗号化snapshotは残る場合があるため、復旧後に即時削除してください。');
@@ -112,7 +119,7 @@ export function CapturePanel() {
     const next = applyTranscriptEvent(transcriptRef.current, event);
     transcriptRef.current = next;
     setTranscript(next);
-    if (event.phase === 'final') persistSnapshot(next);
+    if (event.phase === 'final' && event.source !== 'synthetic') persistSnapshot(next);
   };
 
   const startLocal = async () => {
@@ -129,6 +136,9 @@ export function CapturePanel() {
     }
     consentRef.current = createConsentRecord();
     consentAllowedRef.current = true;
+    sessionWriteBlockedRef.current = false;
+    persistenceMayExistRef.current = false;
+    persistedSessionRef.current = false;
     sessionIdRef.current = crypto.randomUUID();
     sessionCreatedAtRef.current = new Date().toISOString();
     setMeetingEnded(false);
@@ -185,11 +195,15 @@ export function CapturePanel() {
     setMessage(saveLocallyRef.current ? '入力を終了し、生音声bufferを破棄しました。暗号化sessionは保持期限まで残ります。' : '入力を終了し、生音声bufferを破棄しました。未保存sessionはmemoryだけに残っています。');
   };
   const deleteCurrent = async (): Promise<boolean> => {
+    sessionWriteBlockedRef.current = true;
+    saveLocallyRef.current = false;
+    setSaveLocally(false);
     if (microphone.current || localClient.current || synthetic.current) await stop();
+    await persistenceChain.current;
     const id = sessionIdRef.current;
-    const hadPersistentCopy = persistedSessionRef.current;
-    let localDeleteVerified = !hadPersistentCopy;
-    if (id && hadPersistentCopy) {
+    const localDeleteRequired = persistedSessionRef.current || persistenceMayExistRef.current;
+    let localDeleteVerified = !localDeleteRequired;
+    if (id && localDeleteRequired) {
       try { await (await connectPrivacy()).delete(id); localDeleteVerified = true; }
       catch { localDeleteVerified = false; }
     }
@@ -197,6 +211,7 @@ export function CapturePanel() {
     setMeetingEnded(false);
     if (localDeleteVerified) {
       persistedSessionRef.current = false;
+      persistenceMayExistRef.current = false;
       sessionIdRef.current = '';
       sessionCreatedAtRef.current = '';
       consentRef.current = null;
@@ -236,9 +251,18 @@ export function CapturePanel() {
       for (const utterance of value.transcript) state = applyTranscriptEvent(state, utterance);
       transcriptRef.current = state; setTranscript(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
       persistedSessionRef.current = true;
+      persistenceMayExistRef.current = true;
+      sessionWriteBlockedRef.current = false;
       setRetentionDays(value.retentionDays);
       setMessage('暗号化sessionをmemoryへ読み込みました。captureは自動再開しません。');
     } catch { setMessage('保存sessionを読み込めませんでした。'); }
+  };
+  const deleteStoredSession = async (id: string) => {
+    try {
+      await (await connectPrivacy()).delete(id);
+      await refreshPrivacyStatus(false);
+      setMessage('復号不能sessionの暗号化fileを、復号せずに削除しました。');
+    } catch { setMessage('復号不能sessionを削除できませんでした。privacy helperを確認してください。'); }
   };
 
   const active = sessionState === 'listening' || sessionState === 'paused';
@@ -290,7 +314,7 @@ export function CapturePanel() {
             {meetingEnded && <p role="status" className="rounded bg-[#fff4d9] p-2 font-semibold text-[#76551f]">会議入力を終了しました。暗号化保持、明示export、即時削除のいずれかを確認してください。</p>}
             <div className="flex flex-wrap gap-2"><button onClick={() => void exportCurrent()} className="rounded border px-2 py-1 font-semibold">選択したlocal pathへexport</button><button onClick={() => void deleteCurrent()} className="rounded border border-[#c8a7a0] px-2 py-1 font-semibold text-[#8b3f34]">現在sessionを即時削除</button></div>
             {storedSessions.length > 0 && <div><b>保存session:</b> {storedSessions.slice(0, 5).map((item) => item.unreadable
-              ? <button key={item.id} onClick={() => { sessionIdRef.current = item.id; persistedSessionRef.current = true; void deleteCurrent(); }} className="ml-2 rounded border border-[#c8a7a0] px-2 py-1 text-[#8b3f34]">復号不能sessionを削除</button>
+              ? <button key={item.id} onClick={() => void deleteStoredSession(item.id)} className="ml-2 rounded border border-[#c8a7a0] px-2 py-1 text-[#8b3f34]">復号不能sessionを削除</button>
               : <button key={item.id} onClick={() => void loadSession(item.id)} className="ml-2 rounded border px-2 py-1">{new Date(item.updatedAt as string).toLocaleString()} · 発話{item.transcriptCount}件を再開</button>)}</div>}
             <p>削除はlocal encrypted session全体が対象です。明示exportは別copyなので個別削除が必要です。OpenAI送信後の保持はlocal削除では取り消せません（現在のadapterでは送信OFF）。</p>
           </div>
