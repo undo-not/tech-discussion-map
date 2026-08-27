@@ -4,12 +4,14 @@ import { createServer } from 'node:http';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { createPrivacyStore } from './privacy-store.mjs';
 
 const loopbackHost = '127.0.0.1';
 const defaultPort = 43117;
 const maximumJsonBytes = 4 * 1024;
 const maximumAudioBytes = 128 * 1024;
 const maximumWorkerFrameBytes = 64 * 1024;
+const maximumPrivacyRequestBytes = 1024 * 1024;
 const allowedOrigins = new Set(['http://127.0.0.1:3000', 'http://localhost:3000']);
 const tokenLifetimeMs = 10 * 60 * 1000;
 
@@ -104,6 +106,7 @@ export function createCompanionServer(options = {}) {
   const modelPath = resolve(options.modelPath ?? defaults.modelPath);
   const workerPath = resolve(options.workerPath ?? environment.TECHMAP_TRANSCRIBER_PATH ?? defaults.workerPath);
   const spawnWorker = options.spawnWorker ?? ((args) => spawn(workerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
+  const privacyStore = options.privacyStore ?? createPrivacyStore({ environment });
   const tokens = new Map();
   const sessions = new Map();
 
@@ -111,11 +114,14 @@ export function createCompanionServer(options = {}) {
 
   const server = createServer(async (request, response) => {
     const origin = request.headers.origin;
+    const address = server.address();
+    const expectedHost = typeof address === 'object' && address ? `${loopbackHost}:${address.port}` : `${loopbackHost}:${defaultPort}`;
+    if (request.headers.host !== expectedHost) return sendJson(response, 403, { error: 'host-not-allowed' });
     if (!origin || !allowedOrigins.has(origin)) return sendJson(response, 403, { error: 'origin-not-allowed' });
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {
         'Access-Control-Allow-Origin': origin,
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Authorization, Content-Type',
         'Access-Control-Max-Age': '600',
         Vary: 'Origin',
@@ -139,6 +145,37 @@ export function createCompanionServer(options = {}) {
     const tokenEntry = [...tokens.entries()].find(([token]) => tokenMatches(token, actualToken));
     if (!tokenEntry || tokenEntry[1].origin !== origin || tokenEntry[1].expiresAt < Date.now()) {
       return sendJson(response, 401, { error: 'unauthorized' }, origin);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/v1/privacy/status') {
+      try { return sendJson(response, 200, await privacyStore.status(), origin); }
+      catch { return sendJson(response, 503, { error: 'privacy-store-unavailable' }, origin); }
+    }
+    if (request.method === 'GET' && url.pathname === '/v1/privacy/sessions') {
+      try { return sendJson(response, 200, { sessions: await privacyStore.list() }, origin); }
+      catch { return sendJson(response, 503, { error: 'privacy-store-unavailable' }, origin); }
+    }
+    if (request.method === 'POST' && url.pathname === '/v1/privacy/sweep') {
+      try { return sendJson(response, 200, { deleted: await privacyStore.sweep() }, origin); }
+      catch { return sendJson(response, 503, { error: 'privacy-store-unavailable' }, origin); }
+    }
+    const privacyMatch = /^\/v1\/privacy\/sessions\/([a-f0-9-]{36})$/.exec(url.pathname);
+    if (privacyMatch && request.method === 'PUT') {
+      const body = await readBody(request, maximumPrivacyRequestBytes).catch(() => null);
+      let session;
+      try { session = body ? JSON.parse(body.toString('utf8')) : null; }
+      catch { session = null; }
+      if (!session || session.id !== privacyMatch[1]) return sendJson(response, 400, { error: 'invalid-session' }, origin);
+      try { return sendJson(response, 200, await privacyStore.save(session), origin); }
+      catch { return sendJson(response, 400, { error: 'session-not-saved' }, origin); }
+    }
+    if (privacyMatch && request.method === 'GET') {
+      try { return sendJson(response, 200, await privacyStore.load(privacyMatch[1]), origin); }
+      catch { return sendJson(response, 404, { error: 'session-not-found' }, origin); }
+    }
+    if (privacyMatch && request.method === 'DELETE') {
+      try { return sendJson(response, 200, { deleted: await privacyStore.remove(privacyMatch[1]) }, origin); }
+      catch { return sendJson(response, 503, { error: 'session-not-deleted' }, origin); }
     }
 
     if (request.method === 'POST' && url.pathname === '/v1/sessions') {
