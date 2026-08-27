@@ -286,8 +286,8 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     demoModeRef.current = false;
-    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     consentRef.current = createConsentRecord();
     consentAllowedRef.current = true;
     sessionWriteBlockedRef.current = false;
