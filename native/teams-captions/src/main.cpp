@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <ole2.h>
 #include <tlhelp32.h>
 #include <uiautomation.h>
 #include <wrl/client.h>
