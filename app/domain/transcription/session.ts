@@ -50,6 +50,6 @@ export function transitionTranscriptionSession(
     case 'device-unavailable':
       return current === 'requesting-permission' || current === 'listening' ? 'device-unavailable' : current;
     case 'engine-unavailable':
-      return current === 'starting-local-engine' || current === 'listening' || current === 'paused' ? 'engine-unavailable' : current;
+      return current === 'requesting-permission' || current === 'starting-local-engine' || current === 'listening' || current === 'paused' ? 'engine-unavailable' : current;
   }
 }

@@ -65,6 +65,11 @@ describe('LiveMindMap DOM integration', () => {
     expect(detail.textContent).toContain('状態 open');
     expect(detail.textContent).toContain('出所 AI提案');
     expect(detail.textContent).toContain('根拠 component-u0');
+    fireEvent.click(screen.getByRole('button', { name: '編集' }));
+    expect(detail.textContent).toContain('種類 論点');
+    expect(detail.textContent).toContain('状態 open');
+    expect(detail.textContent).toContain('出所 AI提案');
+    expect(detail.textContent).toContain('根拠 component-u0');
   });
 
   test('the explicit top command reframes a normal 100-node map', () => {

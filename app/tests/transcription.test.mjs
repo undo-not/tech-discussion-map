@@ -15,6 +15,7 @@ import { createPrivacySafeStructuredResponsesRequest } from '../adapters/privacy
 import { analysisStructuredOutput } from '../domain/analysis/schema.ts';
 import { redactText } from '../domain/privacy/redaction.ts';
 import { transitionTranscriptionSession } from '../domain/transcription/session.ts';
+import { adoptStartedInput, beginInputStart, cancelInputStart, createInputStartGate, finishInputStart } from '../domain/transcription/input-start-gate.ts';
 import { applyTranscriptEvent, emptyTranscriptState } from '../domain/transcription/utterance.ts';
 import { createCompanionServer, frameForWorker, parseWorkerEvents } from '../../companion/local-transcription-host.mjs';
 
@@ -40,6 +41,7 @@ test('session requires an explicit start before permission and engine transition
   state = transitionTranscriptionSession(state, { type: 'started' });
   assert.equal(state, 'listening');
   assert.equal(transitionTranscriptionSession('idle', { type: 'demo-started' }), 'listening');
+  assert.equal(transitionTranscriptionSession('requesting-permission', { type: 'engine-unavailable' }), 'engine-unavailable');
   for (const failed of ['permission-denied', 'device-unavailable', 'engine-unavailable']) {
     let retry = transitionTranscriptionSession(failed, { type: 'start-requested' });
     assert.equal(retry, 'requesting-permission');
@@ -47,6 +49,25 @@ test('session requires an explicit start before permission and engine transition
     retry = transitionTranscriptionSession(retry, { type: 'started' });
     assert.equal(retry, 'listening');
   }
+});
+
+test('only one input start can be pending and a cancelled completion is stopped instead of adopted', async () => {
+  const gate = createInputStartGate();
+  const first = beginInputStart(gate);
+  assert.equal(typeof first, 'number');
+  assert.equal(beginInputStart(gate), null);
+  let stopped = 0;
+  let adopted = 0;
+  cancelInputStart(gate);
+  assert.equal(await adoptStartedInput(gate, first, { async stop() { stopped += 1; } }, () => true, () => { adopted += 1; }), false);
+  assert.equal(stopped, 1);
+  assert.equal(adopted, 0);
+
+  const retry = beginInputStart(gate);
+  assert.equal(await adoptStartedInput(gate, retry, { async stop() { stopped += 1; } }, () => true, () => { adopted += 1; }), true);
+  finishInputStart(gate, retry);
+  assert.equal(adopted, 1);
+  assert.equal(stopped, 1);
 });
 
 test('Teams PCM downmixes and decimates to the shared 16 kHz transcription port', () => {
