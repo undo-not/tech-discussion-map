@@ -14,8 +14,8 @@ export function createRedactedAnalysisInput(redactedWindow: RedactedText, state:
     .slice(-40)
     .map((item) => `${item.id}|${item.kind}|${item.provenance}|${item.status}|${item.title}|${item.detail.slice(0, 180)}|evidence=${item.evidenceUtteranceIds.join(',')}`)
     .join('\n');
-  const boundedWindow = Array.from(redactedWindow).slice(-4_800).join('');
-  const boundedProjection = Array.from(projection).slice(-2_400).join('');
+  const boundedWindow = Array.from(redactedWindow).slice(-4_000).join('');
+  const boundedProjection = Array.from(projection).slice(-1_500).join('');
   const combined = `${analysisPrompt}\n\nREDACTED_UTTERANCE_WINDOW:\n${boundedWindow}\n\nREDACTED_STATE_PROJECTION:\n${boundedProjection || '(empty)'}`;
   const result = redactText(combined);
   if (!result.ok) throw new Error(`analysis-context-${result.reason}`);

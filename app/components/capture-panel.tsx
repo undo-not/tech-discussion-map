@@ -160,10 +160,11 @@ export function CapturePanel() {
         return;
       }
       if (generation !== analysisGenerationRef.current) return;
-      const delta = analyzeWithDeterministicMock(transcriptState.utterances, analysisStateRef.current);
+      const currentTranscript = transcriptRef.current;
+      const delta = analyzeWithDeterministicMock(currentTranscript.utterances, analysisStateRef.current);
       if (delta.operations.length === 0) { setAnalysisStatus('local mock: 構造上の変化はありません。'); return; }
-      const next = applyAnalysisDelta(analysisStateRef.current, delta, transcriptState.utterances);
-      analysisStateRef.current = next; setAnalysisState(next); if (persistResult) persistSnapshot(transcriptState);
+      const next = applyAnalysisDelta(analysisStateRef.current, delta, currentTranscript.utterances);
+      analysisStateRef.current = next; setAnalysisState(next); if (persistResult) persistSnapshot(currentTranscript);
       setAnalysisStatus(`local mockをrevision ${next.revision}へ更新しました。`);
     }).catch(() => setAnalysisStatus('分析を適用できませんでした。local workspaceは変更せず、mock／手動整理を継続できます。'));
   };
