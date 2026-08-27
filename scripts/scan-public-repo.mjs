@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 
-const forbiddenExtensions = new Set(['.wav', '.mp3', '.m4a', '.webm', '.pcm', '.raw', '.transcript', '.bin']);
-const forbiddenPathParts = [/(^|\/)recordings\//i, /(^|\/)sessions\//i, /(^|\/)data\/local\//i];
+const forbiddenExtensions = new Set(['.wav', '.mp3', '.m4a', '.webm', '.pcm', '.raw', '.transcript', '.bin', '.bmp', '.tif', '.tiff']);
+const forbiddenPathParts = [/(^|\/)recordings\//i, /(^|\/)sessions\//i, /(^|\/)captures\//i, /(^|\/)screenshots\//i, /(^|\/)ocr-output\//i, /(^|\/)data\/local\//i];
 const secretPatterns = [
   { name: 'OpenAI-style API key', pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
   { name: 'AWS access key', pattern: /\bAKIA[A-Z0-9]{16}\b/ },

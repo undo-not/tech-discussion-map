@@ -18,5 +18,8 @@
 *.transcript
 *.jsonl
 recordings/
+captures/
+screenshots/
+ocr-output/
 sessions/
 data/local/

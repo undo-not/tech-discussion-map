@@ -4,12 +4,13 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 
 ## Product boundary
 
-本番runtimeはWindowsローカルcompanionとして動作し、利用者の明示操作によるマイク入力とTeams processに限定したapplication loopbackを交換可能なadapterで扱います。Microsoft Graphは会議後の照合候補です。Teams media botはlocal-only境界に反するため採用せず、meeting side panelはhosting境界を変更する場合の将来UI候補に限ります。ChatGPT Sitesは合成データのUI review専用です。生音声は保存せず、文字起こしと分析結果はGit working tree外へローカル保存できます。OpenAI API送信はIssue #3と#6のredaction、保持、`store: false`境界に従います。詳細は[ADR-0002](docs/adr/0002-local-windows-teams-audio-boundary.md)を参照してください。
+本番runtimeはWindowsローカルcompanionとして動作します。MVPの第一入力候補は、利用者が明示選択したTeamsライブキャプション矩形のmemory-only local OCRです。安定selectorを実機で証明できたTeams buildだけUI Automationを任意最適化として使い、字幕を利用できない場合に限って、利用者の明示操作でマイク入力とTeams process限定application loopbackをlocal Whisperへ切り替えます。Microsoft Graphは会議後の照合候補です。Teams media botはlocal-only境界に反するため採用せず、meeting side panelはhosting境界を変更する場合の将来UI候補に限ります。ChatGPT Sitesは合成データのUI review専用です。生音声とOCR画像は保存せず、匿名化済み文字起こしと分析結果はGit working tree外へローカル保存できます。OpenAI API送信はIssue #3と#6のredaction、保持、`store: false`境界に従います。詳細は[ADR-0007](docs/adr/0007-teams-live-captions-first.md)と[ADR-0002](docs/adr/0002-local-windows-teams-audio-boundary.md)を参照してください。
 
 ## Repository layout
 
 - `app/`: 共通UI層と、Sites/Vinextによる合成データreview surface
 - `native/windows-audio/`: Teams process treeだけを対象にするWindows音声helper
+- `native/teams-captions/`: Teams字幕の選択矩形・memory OCR・話者aliasingを所有するWindows helper
 - `native/transcription/`: pinned whisper.cppを使うmemory-only文字起こしworker
 - `native/privacy/`: current-user ACL、DPAPI、Windows Credential Managerを所有するprivacy helper
 - `app/domain/analysis/`: versioned analysis state/delta、strict schema、prompt contract
@@ -34,6 +35,19 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 検証コマンドは[AGENTS.md](AGENTS.md)を参照してください。
 
 Windows音声helperのbuildと非capturing capability checkは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。実会議captureはIssue #6の同意・privacy gateが完成するまで実行しません。
+
+Issue #17/#19ではTeams字幕入力を実装しています。対象PCでUI Automation probeがtimeoutしたため、実装本線は選択矩形local OCRです。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、Teams top-level windowからUI Automation rootを取得できるかだけをローカル表示します。OCRは全参加者同意と利用者のdrag選択後に、選択矩形だけをmemory処理します。
+
+```powershell
+cmake -S native/teams-captions -B native/teams-captions/build -A x64
+cmake --build native/teams-captions/build --config Release
+ctest --test-dir native/teams-captions/build -C Release --output-on-failure
+native/teams-captions/build/Release/techmap-captions.exe probe
+```
+
+`probe-at-cursor`は本人のみの合成テスト会議または全参加者同意済みのテスト専用です。診断結果もGitHubへ貼り付けません。詳細は[Teams caption source capability specification](docs/specs/teams-caption-source.md)を参照してください。
+
+字幕OCRを使う前に、組織で承認されたTesseract 5.5.3 Windows distributionと`jpn`／`eng` traineddataを用意し、実測SHA-256を指定して`powershell -ExecutionPolicy Bypass -File scripts/setup-tesseract.ps1 ...`を実行します。scriptはdownloadせず、検証済みdistributionを`%LOCALAPPDATA%\TechMapLive\ocr\current`へcopyします。詳しい引数と操作は[native caption helper README](native/teams-captions/README.md)を参照してください。
 
 ローカル文字起こしは[local transcription specification](docs/specs/local-transcription.md)に従います。会議前に`powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-model.ps1`でchecksum検証済みmodelを導入し、native workerをbuildしてから`node companion/local-transcription-host.mjs`を起動します。companionが表示する一度限りの`#techmap-launch=...`付きURLを同じWindows userのbrowserで開いてください。fragmentはHTTPへ送られず、UIがmemoryへ取り込んだ直後にaddress barから消去します。公開URLではマイク入力は無効で、合成デモだけが動作します。
 

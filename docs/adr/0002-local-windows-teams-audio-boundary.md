@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Source: Issue #5
+- Reassessment: Issue #17 / ADR-0007はTeamsライブキャプションを第一候補にできるか検証中。decision gate完了までは本ADRが有効。
 
 ## Context
 

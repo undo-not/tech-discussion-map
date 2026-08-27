@@ -28,6 +28,24 @@ function containsForbiddenSessionKey(value) {
   return Object.entries(value).some(([key, nested]) => forbidden.test(key) || containsForbiddenSessionKey(nested));
 }
 
+function isValidStoredUtterance(item) {
+  if (typeof item !== 'object' || item === null) return false;
+  const utteranceKeys = new Set(['id', 'revision', 'phase', 'source', 'speaker', 'speakerAlias', 'startMs', 'endMs', 'text']);
+  const aliasIsValid = item.speaker === 'displayed-alias'
+    ? typeof item.speakerAlias === 'string' && /^speaker-[1-9][0-9]{0,2}$/.test(item.speakerAlias)
+    : item.speakerAlias === undefined;
+  return exactKeys(item, utteranceKeys) &&
+    /^[a-zA-Z0-9_-]{1,80}$/.test(item.id) &&
+    Number.isSafeInteger(item.revision) && item.revision >= 0 &&
+    item.phase === 'final' &&
+    ['local', 'remote', 'teams-caption', 'synthetic'].includes(item.source) &&
+    ['self', 'remote-group', 'displayed-alias', 'anonymous', 'unknown'].includes(item.speaker) &&
+    aliasIsValid &&
+    Number.isSafeInteger(item.startMs) && item.startMs >= 0 &&
+    Number.isSafeInteger(item.endMs) && item.endMs >= item.startMs &&
+    typeof item.text === 'string' && item.text.length > 0 && item.text.length <= 8_000;
+}
+
 export function validateStoredSession(value) {
   if (typeof value !== 'object' || value === null) throw new Error('invalid-session');
   const allowed = new Set(['id', 'createdAt', 'updatedAt', 'expiresAt', 'retentionDays', 'consent', 'transcript', 'analysis', 'state']);
@@ -35,8 +53,7 @@ export function validateStoredSession(value) {
   for (const field of ['createdAt', 'updatedAt', 'expiresAt']) if (typeof value[field] !== 'string' || !Number.isFinite(Date.parse(value[field]))) throw new Error('invalid-session-time');
   if (Date.parse(value.expiresAt) <= Date.parse(value.updatedAt)) throw new Error('invalid-session-retention');
   if (typeof value.consent !== 'object' || value.consent === null || !exactKeys(value.consent, new Set(['version', 'confirmed', 'confirmedAt', 'scope'])) || value.consent.version !== 1 || value.consent.confirmed !== true || value.consent.scope !== 'all-participants' || typeof value.consent.confirmedAt !== 'string' || !Number.isFinite(Date.parse(value.consent.confirmedAt))) throw new Error('invalid-session-consent');
-  const utteranceKeys = new Set(['id', 'revision', 'phase', 'source', 'speaker', 'startMs', 'endMs', 'text']);
-  if (!Array.isArray(value.transcript) || value.transcript.length > 10_000 || value.transcript.some((item) => typeof item !== 'object' || item === null || !exactKeys(item, utteranceKeys) || !/^[a-zA-Z0-9_-]{1,80}$/.test(item.id) || !Number.isSafeInteger(item.revision) || item.revision < 0 || item.phase !== 'final' || !['local', 'remote', 'synthetic'].includes(item.source) || !['self', 'remote-group', 'unknown'].includes(item.speaker) || !Number.isSafeInteger(item.startMs) || item.startMs < 0 || !Number.isSafeInteger(item.endMs) || item.endMs < item.startMs || typeof item.text !== 'string' || item.text.length === 0 || item.text.length > 8_000)) throw new Error('invalid-session-transcript');
+  if (!Array.isArray(value.transcript) || value.transcript.length > 10_000 || value.transcript.some((item) => !isValidStoredUtterance(item))) throw new Error('invalid-session-transcript');
   let analysis;
   try {
     const candidate = Array.isArray(value.analysis) && value.analysis.length === 0 ? emptyAnalysisState : value.analysis;

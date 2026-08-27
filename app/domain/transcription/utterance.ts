@@ -1,6 +1,6 @@
-export const utteranceSources = ['local', 'remote', 'synthetic'] as const;
+export const utteranceSources = ['local', 'remote', 'teams-caption', 'synthetic'] as const;
 export const utterancePhases = ['partial', 'final'] as const;
-export const speakerLabels = ['self', 'remote-group', 'unknown'] as const;
+export const speakerLabels = ['self', 'remote-group', 'displayed-alias', 'anonymous', 'unknown'] as const;
 
 export type UtteranceSource = (typeof utteranceSources)[number];
 export type UtterancePhase = (typeof utterancePhases)[number];
@@ -12,6 +12,7 @@ export type TranscriptUtterance = {
   phase: UtterancePhase;
   source: UtteranceSource;
   speaker: SpeakerLabel;
+  speakerAlias?: string;
   startMs: number;
   endMs: number;
   text: string;
@@ -23,6 +24,7 @@ export type TranscriptState = {
 };
 
 const safeId = /^[a-zA-Z0-9_-]{1,80}$/;
+const safeSpeakerAlias = /^speaker-[1-9][0-9]{0,2}$/;
 
 export function parseTranscriptUtterance(value: unknown): TranscriptUtterance {
   if (typeof value !== 'object' || value === null) throw new Error('Invalid transcript event');
@@ -33,6 +35,9 @@ export function parseTranscriptUtterance(value: unknown): TranscriptUtterance {
     !utterancePhases.includes(item.phase as UtterancePhase) ||
     !utteranceSources.includes(item.source as UtteranceSource) ||
     !speakerLabels.includes(item.speaker as SpeakerLabel) ||
+    (item.speaker === 'displayed-alias'
+      ? typeof item.speakerAlias !== 'string' || !safeSpeakerAlias.test(item.speakerAlias)
+      : item.speakerAlias !== undefined) ||
     !Number.isSafeInteger(item.startMs) || (item.startMs as number) < 0 ||
     !Number.isSafeInteger(item.endMs) || (item.endMs as number) < (item.startMs as number) ||
     typeof item.text !== 'string' || item.text.length > 8_000
@@ -45,6 +50,7 @@ export function parseTranscriptUtterance(value: unknown): TranscriptUtterance {
     phase: item.phase as UtterancePhase,
     source: item.source as UtteranceSource,
     speaker: item.speaker as SpeakerLabel,
+    ...(typeof item.speakerAlias === 'string' ? { speakerAlias: item.speakerAlias } : {}),
     startMs: item.startMs as number,
     endMs: item.endMs as number,
     text: item.text.trim(),

@@ -86,6 +86,41 @@ function parseWorkerEvents(state, chunk) {
   return parsed;
 }
 
+const captionStates = new Set(['selecting-target', 'active-ocr', 'degraded-caption-missing', 'degraded-low-confidence', 'stopped']);
+const captionReasons = new Set([
+  'user-selection-required', 'capture-started', 'selection-cancelled', 'teams-not-foreground', 'teams-not-visible',
+  'teams-minimized', 'teams-window-unavailable', 'selection-invalid', 'selection-outside-client', 'selection-too-large',
+  'selection-covered', 'dpi-changed', 'capture-unsupported', 'ocr-timeout', 'ocr-unavailable', 'low-confidence', 'user-stopped',
+]);
+
+function exactKeys(value, expected) {
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+function validateCaptionWorkerEvent(value) {
+  if (typeof value !== 'object' || value === null || value.v !== 1 || typeof value.type !== 'string') throw new Error('invalid-caption-worker-event');
+  if (value.type === 'state') {
+    if (!exactKeys(value, ['reason', 'state', 'type', 'v']) || !captionStates.has(value.state) || !captionReasons.has(value.reason)) throw new Error('invalid-caption-state-event');
+  } else if (value.type === 'observation') {
+    const hasAlias = value.speaker === 'displayed-alias';
+    const expected = hasAlias
+      ? ['confidence', 'observedAtMs', 'revision', 'rowId', 'source', 'speaker', 'speakerAlias', 'text', 'type', 'v']
+      : ['confidence', 'observedAtMs', 'revision', 'rowId', 'source', 'speaker', 'text', 'type', 'v'];
+    if (!exactKeys(value, expected) || !/^ocr-[a-f0-9]{8}-[1-9][0-9]{0,8}$/.test(value.rowId) ||
+        !Number.isSafeInteger(value.revision) || value.revision < 1 || value.source !== 'teams-ocr' ||
+        !['displayed-alias', 'anonymous', 'unknown'].includes(value.speaker) ||
+        (hasAlias ? typeof value.speakerAlias !== 'string' || !/^speaker-[1-9][0-9]{0,2}$/.test(value.speakerAlias) : value.speakerAlias !== undefined) ||
+        !Number.isSafeInteger(value.observedAtMs) || value.observedAtMs < 0 || typeof value.text !== 'string' || value.text.length === 0 || value.text.length > 8_000 ||
+        !Number.isInteger(value.confidence) || value.confidence < 85 || value.confidence > 100) throw new Error('invalid-caption-observation-event');
+  } else if (value.type === 'row-disappeared') {
+    if (!exactKeys(value, ['observedAtMs', 'rowId', 'type', 'v']) || !/^ocr-[a-f0-9]{8}-[1-9][0-9]{0,8}$/.test(value.rowId) || !Number.isSafeInteger(value.observedAtMs) || value.observedAtMs < 0) throw new Error('invalid-caption-row-event');
+  } else if (value.type === 'tick') {
+    if (!exactKeys(value, ['observedAtMs', 'type', 'v']) || !Number.isSafeInteger(value.observedAtMs) || value.observedAtMs < 0) throw new Error('invalid-caption-tick-event');
+  } else throw new Error('unknown-caption-worker-event');
+  return structuredClone(value);
+}
+
 function defaultPaths(environment) {
   const localAppData = environment.LOCALAPPDATA;
   if (!localAppData || !isAbsolute(localAppData)) throw new Error('LOCALAPPDATA is required');
@@ -95,6 +130,7 @@ function defaultPaths(environment) {
     modelRoot,
     modelPath: resolve(modelRoot, 'ggml-tiny.bin'),
     workerPath: resolve(scriptDirectory, '..', 'native', 'transcription', 'build', 'Release', 'techmap-transcriber.exe'),
+    captionWorkerPath: resolve(scriptDirectory, '..', 'native', 'teams-captions', 'build', 'Release', 'techmap-captions.exe'),
   };
 }
 
@@ -108,12 +144,15 @@ export function createCompanionServer(options = {}) {
   const defaults = defaultPaths(environment);
   const modelPath = resolve(options.modelPath ?? defaults.modelPath);
   const workerPath = resolve(options.workerPath ?? environment.TECHMAP_TRANSCRIBER_PATH ?? defaults.workerPath);
+  const captionWorkerPath = resolve(options.captionWorkerPath ?? environment.TECHMAP_CAPTIONS_PATH ?? defaults.captionWorkerPath);
   const spawnWorker = options.spawnWorker ?? ((args) => spawn(workerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
+  const spawnCaptionWorker = options.spawnCaptionWorker ?? ((args) => spawn(captionWorkerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
   const privacyStore = options.privacyStore ?? createPrivacyStore({ environment });
   const launchSecret = options.launchSecret ?? randomBytes(32).toString('hex');
   if (!/^[a-f0-9]{64}$/.test(launchSecret)) throw new Error('invalid-launch-secret');
   const tokens = new Map();
   const sessions = new Map();
+  const captionSessions = new Map();
   const globalAnalysisBudget = { windowStart: Date.now(), calls: 0 };
 
   if (!pathIsWithin(defaults.modelRoot, modelPath)) throw new Error('Model must remain under LocalAppData\\TechMapLive\\models');
@@ -205,6 +244,113 @@ export function createCompanionServer(options = {}) {
       catch { return sendJson(response, 503, { error: 'session-not-deleted' }, origin); }
     }
 
+    const clearCaptionSessionBuffers = (session) => {
+      if (session.parser?.buffer) session.parser.buffer.fill(0);
+      session.parser = { buffer: Buffer.alloc(0) };
+      session.events.length = 0;
+    };
+
+    const detachCaptionWorker = (session) => {
+      const worker = session.worker;
+      session.worker = null;
+      if (worker && !worker.killed) worker.kill();
+    };
+
+    const attachCaptionWorker = (session) => {
+      detachCaptionWorker(session);
+      clearCaptionSessionBuffers(session);
+      const sessionProof = randomBytes(32).toString('hex');
+      const worker = spawnCaptionWorker(['ocr-capture', '--consent-confirmed', '--session-proof', sessionProof]);
+      session.worker = worker;
+      session.stopped = false;
+      session.paused = false;
+      worker.stdin.on('error', () => {
+        if (session.worker !== worker || session.paused || session.stopped) return;
+        session.stopped = true;
+        clearCaptionSessionBuffers(session);
+        if (!worker.killed) worker.kill();
+      });
+      try { worker.stdin.end(sessionProof); }
+      catch { worker.stdin.emit('error', new Error('caption-proof-write-failed')); }
+      worker.stdout.on('data', (chunk) => {
+        if (session.worker !== worker || session.paused || session.stopped) { chunk.fill(0); return; }
+        try {
+          for (const event of parseWorkerEvents(session.parser, chunk).map(validateCaptionWorkerEvent)) {
+            session.cursor += 1;
+            session.events.push({ cursor: session.cursor, value: event });
+            if (session.events.length > 256) session.events.shift();
+          }
+        } catch {
+          session.stopped = true;
+          clearCaptionSessionBuffers(session);
+          worker.kill();
+        } finally {
+          chunk.fill(0);
+        }
+      });
+      worker.on('error', () => { if (session.worker === worker && !session.paused) session.stopped = true; });
+      worker.on('exit', () => { if (session.worker === worker && !session.paused) session.stopped = true; });
+    };
+
+    if (request.method === 'POST' && url.pathname === '/v1/caption-sessions') {
+      const body = await readBody(request, maximumJsonBytes).catch(() => null);
+      let configuration;
+      try { configuration = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; }
+      catch { configuration = null; }
+      if (!configuration || !exactKeys(configuration, ['consentConfirmed']) || configuration.consentConfirmed !== true) {
+        return sendJson(response, 400, { error: 'caption-consent-required' }, origin);
+      }
+      if (!existsSync(captionWorkerPath)) return sendJson(response, 503, { error: 'caption-engine-not-installed' }, origin);
+      for (const [id, existing] of captionSessions) {
+        if (!existing.stopped) continue;
+        clearCaptionSessionBuffers(existing);
+        detachCaptionWorker(existing);
+        captionSessions.delete(id);
+      }
+      if (captionSessions.size >= 2) return sendJson(response, 429, { error: 'too-many-caption-sessions' }, origin);
+      const id = randomUUID();
+      const session = { id, worker: null, paused: false, stopped: false, cursor: 0, events: [], parser: { buffer: Buffer.alloc(0) } };
+      captionSessions.set(id, session);
+      attachCaptionWorker(session);
+      return sendJson(response, 201, { sessionId: id }, origin);
+    }
+
+    const captionMatch = /^\/v1\/caption-sessions\/([a-f0-9-]{36})(?:\/(events|pause|resume|stop))?$/.exec(url.pathname);
+    if (captionMatch) {
+      const captionSession = captionSessions.get(captionMatch[1]);
+      if (!captionSession) return sendJson(response, 404, { error: 'caption-session-not-found' }, origin);
+      const action = captionMatch[2];
+      if (request.method === 'GET' && action === 'events') {
+        const after = Number(url.searchParams.get('after') ?? '0');
+        if (!Number.isSafeInteger(after) || after < 0) return sendJson(response, 400, { error: 'invalid-cursor' }, origin);
+        if (!captionSession.events.some((event) => event.cursor > after) && !captionSession.stopped && !captionSession.paused) await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+        return sendJson(response, 200, { cursor: captionSession.cursor, events: captionSession.events.filter((event) => event.cursor > after).map((event) => event.value), stopped: captionSession.stopped, paused: captionSession.paused }, origin);
+      }
+      if (request.method === 'POST' && action === 'pause') {
+        if (captionSession.stopped) return sendJson(response, 409, { error: 'caption-session-stopped' }, origin);
+        if (captionSession.paused) return sendJson(response, 200, { state: 'paused', reselectOnResume: true }, origin);
+        captionSession.paused = true;
+        clearCaptionSessionBuffers(captionSession);
+        detachCaptionWorker(captionSession);
+        return sendJson(response, 200, { state: 'paused', reselectOnResume: true }, origin);
+      }
+      if (request.method === 'POST' && action === 'resume') {
+        if (captionSession.stopped) return sendJson(response, 409, { error: 'caption-session-stopped' }, origin);
+        if (!captionSession.paused) return sendJson(response, 409, { error: 'caption-session-not-paused' }, origin);
+        attachCaptionWorker(captionSession);
+        return sendJson(response, 200, { state: 'selecting-target' }, origin);
+      }
+      if (request.method === 'POST' && action === 'stop') {
+        captionSession.paused = false;
+        captionSession.stopped = true;
+        clearCaptionSessionBuffers(captionSession);
+        detachCaptionWorker(captionSession);
+        setTimeout(() => captionSessions.delete(captionSession.id), 60_000).unref();
+        return sendJson(response, 200, { state: 'stopped' }, origin);
+      }
+      return sendJson(response, 404, { error: 'not-found' }, origin);
+    }
+
     if (request.method === 'POST' && url.pathname === '/v1/sessions') {
       const body = await readBody(request, maximumJsonBytes).catch(() => null);
       let configuration;
@@ -280,7 +426,13 @@ export function createCompanionServer(options = {}) {
 
   server.on('close', () => {
     for (const session of sessions.values()) if (!session.worker.killed) session.worker.kill();
+    for (const session of captionSessions.values()) {
+      if (session.parser?.buffer) session.parser.buffer.fill(0);
+      session.events.length = 0;
+      if (session.worker && !session.worker.killed) session.worker.kill();
+    }
     sessions.clear();
+    captionSessions.clear();
     tokens.clear();
   });
   return server;
@@ -296,4 +448,4 @@ export function listen(options = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) listen();
 
-export { allowedOrigins, defaultPort, frameForWorker, loopbackHost, maximumAudioBytes, parseWorkerEvents };
+export { allowedOrigins, defaultPort, frameForWorker, loopbackHost, maximumAudioBytes, parseWorkerEvents, validateCaptionWorkerEvent };
