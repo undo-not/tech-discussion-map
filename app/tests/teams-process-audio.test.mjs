@@ -59,4 +59,8 @@ test('native helper has no file persistence or system-wide fallback path', async
   assert.doesNotMatch(source, /CreateFile[AW]?\s*\(/);
   assert.doesNotMatch(source, /std::ofstream|fopen\s*\(/);
   assert.match(source, /--consent-confirmed/);
+  assert.ok(
+    source.indexOf('captureClient->ReleaseBuffer') < source.indexOf('WriteFrame(FrameType::Pcm'),
+    'WASAPI buffer must be released before IPC backpressure can block',
+  );
 });

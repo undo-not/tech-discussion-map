@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <iomanip>
 #include <memory>
@@ -444,6 +445,8 @@ int RunCapture(DWORD processId, bool consentConfirmed, std::uint64_t durationMil
 
         UINT32 packetFrames = 0;
         while (SUCCEEDED(result = captureClient->GetNextPacketSize(&packetFrames)) && packetFrames > 0) {
+            const std::uint32_t expectedByteCount = packetFrames * format.nBlockAlign;
+            std::vector<std::uint8_t> ownedPayload(expectedByteCount, 0);
             BYTE* data = nullptr;
             DWORD flags = 0;
             result = captureClient->GetBuffer(&data, &packetFrames, &flags, nullptr, nullptr);
@@ -453,18 +456,23 @@ int RunCapture(DWORD processId, bool consentConfirmed, std::uint64_t durationMil
 
             const std::uint32_t byteCount = packetFrames * format.nBlockAlign;
             const bool hasSignal = ContainsSignal(data, packetFrames, format, flags);
-            std::vector<std::uint8_t> silence;
-            const std::uint8_t* payload = data;
-            if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 || data == nullptr) {
-                silence.assign(byteCount, 0);
-                payload = silence.data();
+            if (byteCount > ownedPayload.size()) {
+                captureClient->ReleaseBuffer(packetFrames);
+                result = E_UNEXPECTED;
+                break;
+            }
+            if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0 && data != nullptr) {
+                std::memcpy(ownedPayload.data(), data, byteCount);
             }
 
             const bool stateChanged = tracker.ObserveSignal(hasSignal, GetTickCount64());
-            const bool wrotePcm = WriteFrame(FrameType::Pcm, payload, byteCount);
             const HRESULT releaseResult = captureClient->ReleaseBuffer(packetFrames);
-            if (!wrotePcm || FAILED(releaseResult)) {
-                result = FAILED(releaseResult) ? releaseResult : HRESULT_FROM_WIN32(ERROR_BROKEN_PIPE);
+            if (FAILED(releaseResult)) {
+                result = releaseResult;
+                break;
+            }
+            if (!WriteFrame(FrameType::Pcm, ownedPayload.data(), byteCount)) {
+                result = HRESULT_FROM_WIN32(ERROR_BROKEN_PIPE);
                 break;
             }
             if (stateChanged) {
