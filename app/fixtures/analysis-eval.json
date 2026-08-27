@@ -1,0 +1,29 @@
+{
+  "utterances": [
+    { "id": "eval-u1", "revision": 1, "phase": "final", "source": "synthetic", "speaker": "unknown", "startMs": 0, "endMs": 800, "text": "合成fixture: 方針Aで進める決定です。" },
+    { "id": "eval-u2", "revision": 1, "phase": "final", "source": "synthetic", "speaker": "unknown", "startMs": 900, "endMs": 1600, "text": "合成fixture: 方針Aで進めます。" },
+    { "id": "eval-u3", "revision": 1, "phase": "final", "source": "synthetic", "speaker": "unknown", "startMs": 1700, "endMs": 2400, "text": "合成fixture: 移行日は未解決ですか？" },
+    { "id": "eval-u4", "revision": 1, "phase": "final", "source": "synthetic", "speaker": "unknown", "startMs": 2500, "endMs": 3200, "text": "合成fixture: 移行日は翌月で確定しました。" },
+    { "id": "eval-u5", "revision": 1, "phase": "final", "source": "synthetic", "speaker": "unknown", "startMs": 3300, "endMs": 4000, "text": "合成fixture: 訂正し、方針Bへ決定変更します。" }
+  ],
+  "outputs": [
+    {
+      "contractVersion": 1,
+      "baseRevision": 0,
+      "operations": [
+        { "op": "add", "tempId": "decision_a", "kind": "decision", "title": "方針A", "detail": "方針Aで進める", "status": "proposed", "confidence": 0.8, "evidenceUtteranceIds": ["eval-u1"] },
+        { "op": "add", "tempId": "decision_duplicate", "kind": "decision", "title": "方針Aで進める", "detail": "同一決定の重複候補", "status": "proposed", "confidence": 0.7, "evidenceUtteranceIds": ["eval-u2"] },
+        { "op": "add", "tempId": "migration_question", "kind": "question", "title": "移行日はいつか", "detail": "日付は未解決", "status": "open", "confidence": 0.9, "evidenceUtteranceIds": ["eval-u3"] }
+      ]
+    },
+    {
+      "contractVersion": 1,
+      "baseRevision": 1,
+      "operations": [
+        { "op": "merge", "canonicalItemId": "ai_evaldelta1_decision_a", "duplicateItemIds": ["ai_evaldelta1_decision_duplicate"], "title": "方針A", "detail": "重複を統合", "evidenceUtteranceIds": ["eval-u1", "eval-u2"] },
+        { "op": "update", "itemId": "ai_evaldelta1_migration_question", "title": null, "detail": "翌月に移行する", "status": "confirmed", "confidence": 0.95, "addEvidenceUtteranceIds": ["eval-u4"], "removeEvidenceUtteranceIds": [] },
+        { "op": "update", "itemId": "ai_evaldelta1_decision_a", "title": "方針B", "detail": "訂正により方針Bへ変更", "status": "proposed", "confidence": 0.9, "addEvidenceUtteranceIds": ["eval-u5"], "removeEvidenceUtteranceIds": [] }
+      ]
+    }
+  ]
+}

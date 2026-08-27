@@ -4,6 +4,7 @@
 #include <knownfolders.h>
 #include <shlobj.h>
 #include <wincred.h>
+#include <winhttp.h>
 
 #include <fcntl.h>
 #include <io.h>
@@ -22,6 +23,8 @@ namespace {
 
 constexpr std::size_t MaximumSessionBytes = 8 * 1024 * 1024;
 constexpr std::size_t MaximumCredentialBytes = 512;
+constexpr std::size_t MaximumResponsesRequestBytes = 32 * 1024;
+constexpr std::size_t MaximumResponsesResponseBytes = 256 * 1024;
 constexpr std::wstring_view CredentialTarget = L"TechMapLive/OpenAIApiKey";
 constexpr std::array<std::uint8_t, 24> Entropy{
     0x54, 0x65, 0x63, 0x68, 0x4d, 0x61, 0x70, 0x4c, 0x69, 0x76, 0x65, 0x2d,
@@ -36,8 +39,13 @@ struct HandleDeleter final {
     void operator()(void* handle) const noexcept { if (handle != nullptr && handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
 };
 
+struct WinHttpDeleter final {
+    void operator()(void* handle) const noexcept { if (handle != nullptr) WinHttpCloseHandle(static_cast<HINTERNET>(handle)); }
+};
+
 using UniqueLocal = std::unique_ptr<void, LocalFreeDeleter>;
 using UniqueHandle = std::unique_ptr<void, HandleDeleter>;
+using UniqueWinHttp = std::unique_ptr<void, WinHttpDeleter>;
 
 bool WriteAll(const void* data, std::size_t size) {
     const auto* cursor = static_cast<const std::uint8_t*>(data);
@@ -224,6 +232,76 @@ bool DeleteCredential(std::wstring_view target) {
     return CredDeleteW(target.data(), CRED_TYPE_GENERIC, 0) != FALSE || GetLastError() == ERROR_NOT_FOUND;
 }
 
+bool LooksLikePolicyBoundRequest(const std::vector<std::uint8_t>& input) {
+    const std::string_view value(reinterpret_cast<const char*>(input.data()), input.size());
+    if (value.empty() || value.front() != '{' || value.back() != '}') return false;
+    constexpr std::array<std::string_view, 4> required{R"("store":false)", R"("input":)", R"("type":"json_schema")", R"("strict":true)"};
+    constexpr std::array<std::string_view, 7> forbidden{R"("store":true)", R"("previous_response_id":)", R"("conversation":)", R"("background":)", R"("tools":)", R"("file_ids":)", R"("metadata":)"};
+    return std::all_of(required.begin(), required.end(), [&](std::string_view token) { return value.find(token) != std::string_view::npos; }) &&
+        std::none_of(forbidden.begin(), forbidden.end(), [&](std::string_view token) { return value.find(token) != std::string_view::npos; });
+}
+
+bool SendResponsesRequest(const std::vector<std::uint8_t>& input, std::vector<std::uint8_t>& output) {
+    if (!LooksLikePolicyBoundRequest(input)) return false;
+    PCREDENTIALW rawCredential = nullptr;
+    if (!CredReadW(CredentialTarget.data(), CRED_TYPE_GENERIC, 0, &rawCredential) || rawCredential == nullptr) return false;
+    std::unique_ptr<CREDENTIALW, decltype(&CredFree)> credential(rawCredential, CredFree);
+    if (rawCredential->CredentialBlobSize < 20 || rawCredential->CredentialBlobSize > MaximumCredentialBytes) {
+        if (rawCredential->CredentialBlob != nullptr && rawCredential->CredentialBlobSize > 0) SecureZeroMemory(rawCredential->CredentialBlob, rawCredential->CredentialBlobSize);
+        return false;
+    }
+    std::vector<std::uint8_t> key(rawCredential->CredentialBlob, rawCredential->CredentialBlob + rawCredential->CredentialBlobSize);
+    SecureZeroMemory(rawCredential->CredentialBlob, rawCredential->CredentialBlobSize);
+    if (!ValidCredential(key)) { if (!key.empty()) SecureZeroMemory(key.data(), key.size()); return false; }
+
+    constexpr std::wstring_view authorizationPrefix = L"Authorization: Bearer ";
+    constexpr std::wstring_view authorizationSuffix = L"\r\nContent-Type: application/json";
+    std::wstring authorization;
+    authorization.reserve(authorizationPrefix.size() + key.size() + authorizationSuffix.size());
+    authorization.append(authorizationPrefix);
+    for (const std::uint8_t character : key) authorization.push_back(static_cast<wchar_t>(character));
+    authorization.append(authorizationSuffix);
+
+    UniqueWinHttp session(WinHttpOpen(L"TechMapLive/0.1", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+    bool succeeded = session != nullptr;
+    if (succeeded) {
+        DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+        succeeded = WinHttpSetOption(session.get(), WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols)) != FALSE &&
+            WinHttpSetTimeouts(session.get(), 5'000, 5'000, 20'000, 20'000) != FALSE;
+    }
+    UniqueWinHttp connection(succeeded ? WinHttpConnect(session.get(), L"api.openai.com", INTERNET_DEFAULT_HTTPS_PORT, 0) : nullptr);
+    succeeded = succeeded && connection != nullptr;
+    UniqueWinHttp request(succeeded ? WinHttpOpenRequest(connection.get(), L"POST", L"/v1/responses", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr);
+    succeeded = succeeded && request != nullptr;
+    if (succeeded) {
+        DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        succeeded = WinHttpSetOption(request.get(), WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy)) != FALSE;
+    }
+    if (succeeded) {
+        succeeded = WinHttpSendRequest(request.get(), authorization.c_str(), static_cast<DWORD>(authorization.size()),
+            const_cast<std::uint8_t*>(input.data()), static_cast<DWORD>(input.size()), static_cast<DWORD>(input.size()), 0) != FALSE &&
+            WinHttpReceiveResponse(request.get(), nullptr) != FALSE;
+    }
+    DWORD status = 0;
+    DWORD statusSize = sizeof(status);
+    if (succeeded) succeeded = WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX) != FALSE && status == 200;
+    while (succeeded) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request.get(), &available)) { succeeded = false; break; }
+        if (available == 0) break;
+        if (output.size() + available > MaximumResponsesResponseBytes) { succeeded = false; break; }
+        const std::size_t offset = output.size();
+        output.resize(offset + available);
+        DWORD read = 0;
+        if (!WinHttpReadData(request.get(), output.data() + offset, available, &read) || read == 0) { succeeded = false; break; }
+        output.resize(offset + read);
+    }
+    if (!key.empty()) SecureZeroMemory(key.data(), key.size());
+    if (!authorization.empty()) SecureZeroMemory(authorization.data(), authorization.size() * sizeof(wchar_t));
+    if (!succeeded || output.empty()) { if (!output.empty()) SecureZeroMemory(output.data(), output.size()); output.clear(); return false; }
+    return true;
+}
+
 bool SelfTest() {
     std::vector<std::uint8_t> clear{'s', 'y', 'n', 't', 'h', 'e', 't', 'i', 'c'};
     std::vector<std::uint8_t> sealed;
@@ -270,6 +348,16 @@ int wmain(int argc, wchar_t** argv) {
         std::vector<std::uint8_t> value;
         if (!ReadCredentialInput(value)) return 4;
         return StoreCredential(CredentialTarget, value) ? 0 : 5;
+    }
+    if (command == L"responses") {
+        std::vector<std::uint8_t> input;
+        std::vector<std::uint8_t> output;
+        if (!ReadAll(input, MaximumResponsesRequestBytes) || input.empty()) return 4;
+        const bool requested = SendResponsesRequest(input, output);
+        SecureZeroMemory(input.data(), input.size());
+        const bool written = requested && WriteAll(output.data(), output.size());
+        if (!output.empty()) SecureZeroMemory(output.data(), output.size());
+        return written ? 0 : 7;
     }
     if (command == L"key-status") return WriteText(CredentialExists(CredentialTarget) ? "{\"configured\":true}\n" : "{\"configured\":false}\n") ? 0 : 5;
     if (command == L"delete-key") return DeleteCredential(CredentialTarget) ? 0 : 5;

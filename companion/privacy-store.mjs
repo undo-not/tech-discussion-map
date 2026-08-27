@@ -3,9 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { emptyAnalysisState, validateAnalysisState } from '../app/domain/analysis/contract.ts';
 
 const maximumSessionPlaintextBytes = 1024 * 1024;
 const maximumSessionCiphertextBytes = 8 * 1024 * 1024;
+const maximumResponsesRequestBytes = 32 * 1024;
+const maximumResponsesResponseBytes = 256 * 1024;
 const maximumStoredSessions = 100;
 const sessionIdPattern = /^[a-f0-9-]{36}$/;
 const allowedRetentionDays = new Set([1, 7, 30, 90]);
@@ -34,11 +37,16 @@ export function validateStoredSession(value) {
   if (typeof value.consent !== 'object' || value.consent === null || !exactKeys(value.consent, new Set(['version', 'confirmed', 'confirmedAt', 'scope'])) || value.consent.version !== 1 || value.consent.confirmed !== true || value.consent.scope !== 'all-participants' || typeof value.consent.confirmedAt !== 'string' || !Number.isFinite(Date.parse(value.consent.confirmedAt))) throw new Error('invalid-session-consent');
   const utteranceKeys = new Set(['id', 'revision', 'phase', 'source', 'speaker', 'startMs', 'endMs', 'text']);
   if (!Array.isArray(value.transcript) || value.transcript.length > 10_000 || value.transcript.some((item) => typeof item !== 'object' || item === null || !exactKeys(item, utteranceKeys) || !/^[a-zA-Z0-9_-]{1,80}$/.test(item.id) || !Number.isSafeInteger(item.revision) || item.revision < 0 || item.phase !== 'final' || !['local', 'remote', 'synthetic'].includes(item.source) || !['self', 'remote-group', 'unknown'].includes(item.speaker) || !Number.isSafeInteger(item.startMs) || item.startMs < 0 || !Number.isSafeInteger(item.endMs) || item.endMs < item.startMs || typeof item.text !== 'string' || item.text.length === 0 || item.text.length > 8_000)) throw new Error('invalid-session-transcript');
-  if (!Array.isArray(value.analysis) || value.analysis.length > 2_000) throw new Error('invalid-session-analysis');
+  let analysis;
+  try {
+    const candidate = Array.isArray(value.analysis) && value.analysis.length === 0 ? emptyAnalysisState : value.analysis;
+    analysis = validateAnalysisState(candidate, value.transcript);
+  }
+  catch { throw new Error('invalid-session-analysis'); }
   if (typeof value.state !== 'object' || value.state === null || !exactKeys(value.state, new Set(['capture', 'externalAnalysisAllowed', 'dataControlsAttested'])) || typeof value.state.capture !== 'string' || ('externalAnalysisAllowed' in value.state && typeof value.state.externalAnalysisAllowed !== 'boolean') || ('dataControlsAttested' in value.state && typeof value.state.dataControlsAttested !== 'boolean')) throw new Error('invalid-session-state');
   const serialized = JSON.stringify(value);
   if (Buffer.byteLength(serialized) > maximumSessionPlaintextBytes || containsForbiddenSessionKey(value)) throw new Error('forbidden-session-data');
-  return structuredClone(value);
+  return { ...structuredClone(value), analysis };
 }
 
 function runNativeHelper(helperPath, command, input = Buffer.alloc(0)) {
@@ -46,13 +54,28 @@ function runNativeHelper(helperPath, command, input = Buffer.alloc(0)) {
     const child = spawn(helperPath, [command], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     const chunks = [];
     let size = 0;
+    let settled = false;
+    let oversized = false;
+    const timeoutMilliseconds = command === 'responses' ? 55_000 : 10_000;
+    const finish = (error, output) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error); else resolveRun(output);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish(new Error(`privacy-helper-${command}-timeout`));
+    }, timeoutMilliseconds);
+    timeout.unref();
     child.stdout.on('data', (chunk) => {
       size += chunk.length;
-      if (size > maximumSessionCiphertextBytes) child.kill();
+      const maximumOutputBytes = command === 'responses' ? maximumResponsesResponseBytes : maximumSessionCiphertextBytes;
+      if (size > maximumOutputBytes) { oversized = true; child.kill(); }
       else chunks.push(chunk);
     });
-    child.on('error', () => reject(new Error('privacy-helper-unavailable')));
-    child.on('exit', (code) => code === 0 && size <= maximumSessionCiphertextBytes ? resolveRun(Buffer.concat(chunks)) : reject(new Error(`privacy-helper-${command}-failed`)));
+    child.on('error', () => finish(new Error('privacy-helper-unavailable')));
+    child.on('exit', (code) => code === 0 && !oversized ? finish(null, Buffer.concat(chunks)) : finish(new Error(`privacy-helper-${command}-failed`)));
     child.stdin.end(input);
   });
 }
@@ -124,7 +147,7 @@ export function createPrivacyStore(options = {}) {
       const id = name.slice(0, -5);
       try {
         const session = await load(id);
-        metadata.push({ id: session.id, updatedAt: session.updatedAt, expiresAt: session.expiresAt, transcriptCount: session.transcript.length, analysisCount: session.analysis.length, unreadable: false });
+        metadata.push({ id: session.id, updatedAt: session.updatedAt, expiresAt: session.expiresAt, transcriptCount: session.transcript.length, analysisCount: session.analysis.items.length, unreadable: false });
       } catch {
         metadata.push({ id, updatedAt: null, expiresAt: null, transcriptCount: 0, analysisCount: 0, unreadable: true });
       }
@@ -150,7 +173,17 @@ export function createPrivacyStore(options = {}) {
     return { secureStore: true, credentialConfigured: key?.configured === true, location: '%LOCALAPPDATA%\\TechMapLive\\sessions' };
   }
 
-  return { initialize, list, load, remove, root, save, status, sweep };
+  async function responses(request) {
+    const encoded = Buffer.from(JSON.stringify(request), 'utf8');
+    if (encoded.length === 0 || encoded.length > maximumResponsesRequestBytes) { encoded.fill(0); throw new Error('privacy-responses-request-out-of-bounds'); }
+    let result;
+    try { result = await runner('responses', encoded); } finally { encoded.fill(0); }
+    if (!Buffer.isBuffer(result) || result.length === 0 || result.length > maximumResponsesResponseBytes) throw new Error('privacy-responses-output-out-of-bounds');
+    try { return JSON.parse(result.toString('utf8')); }
+    finally { result.fill(0); }
+  }
+
+  return { initialize, list, load, remove, responses, root, save, status, sweep };
 }
 
-export { allowedRetentionDays, maximumSessionCiphertextBytes, maximumSessionPlaintextBytes, maximumStoredSessions };
+export { allowedRetentionDays, maximumResponsesRequestBytes, maximumResponsesResponseBytes, maximumSessionCiphertextBytes, maximumSessionPlaintextBytes, maximumStoredSessions };

@@ -1,5 +1,6 @@
 import type { ConsentRecord } from '../../domain/privacy/consent.ts';
 import type { TranscriptUtterance } from '../../domain/transcription/utterance.ts';
+import type { AnalysisState } from '../../domain/analysis/contract.ts';
 import { consumeLocalLaunchSecret } from '../companion/launch-secret.ts';
 
 const privacyCompanionOrigin = 'http://127.0.0.1:43117';
@@ -13,7 +14,7 @@ export type StoredSession = {
   retentionDays: 1 | 7 | 30 | 90;
   consent: ConsentRecord;
   transcript: TranscriptUtterance[];
-  analysis: unknown[];
+  analysis: AnalysisState;
   state: Record<string, unknown>;
 };
 

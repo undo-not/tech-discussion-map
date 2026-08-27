@@ -12,6 +12,8 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 - `native/windows-audio/`: Teams process treeだけを対象にするWindows音声helper
 - `native/transcription/`: pinned whisper.cppを使うmemory-only文字起こしworker
 - `native/privacy/`: current-user ACL、DPAPI、Windows Credential Managerを所有するprivacy helper
+- `app/domain/analysis/`: versioned analysis state/delta、strict schema、prompt contract
+- `app/adapters/analysis/`: deterministic mockとprivacy-gated OpenAI analyzer
 - `companion/`: browserとnative helperを接続するloopback-only host
 - `scripts/`: 会議外で実行する検証付きmodel setup
 - `docs/specs/`: 現在のproduct behavior
@@ -21,7 +23,7 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 
 ## Local development
 
-Node.js 22.13以降とpnpmを使用します。
+Node.js 22.18以降とpnpmを使用します。
 
 ```powershell
 cd app
