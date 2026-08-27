@@ -47,3 +47,54 @@ test('cursor worker crash codes cannot be decoded as success flags', async () =>
   assert.match(source, /result < CursorSuccessBase \|\| result > CursorSuccessBase \+ 63/);
   assert.match(source, /const DWORD flags = result - CursorSuccessBase/);
 });
+
+test('OCR capture is consent-gated, selected-region-only, bounded, and memory-only', async () => {
+  const root = resolve(testDirectory, '..', '..');
+  const main = await readFile(resolve(root, 'native', 'teams-captions', 'src', 'main.cpp'), 'utf8');
+  const runtime = await readFile(resolve(root, 'native', 'teams-captions', 'src', 'ocr_runtime.cpp'), 'utf8');
+  assert.match(main, /ocr-capture.*--consent-confirmed/s);
+  assert.match(runtime, /GetFileType\(GetStdHandle\(STD_OUTPUT_HANDLE\)\) != FILE_TYPE_PIPE/);
+  assert.match(runtime, /SetWindowDisplayAffinity\(overlay, WDA_EXCLUDEFROMCAPTURE\)/);
+  assert.match(runtime, /const int width = static_cast<int>\(Width\(selection\)\)/);
+  assert.match(runtime, /CreateDIBSection/);
+  assert.match(runtime, /PrintWindow\(window, memoryDc, PW_RENDERFULLCONTENT\)/);
+  assert.doesNotMatch(runtime, /GetDC\((?:nullptr|NULL|0)\)|GetDesktopWindow|GetWindowDC\((?:nullptr|NULL|0)\)|BitBlt/);
+  assert.match(runtime, /SelectionPointsBelongToTeams/);
+  assert.match(runtime, /CaptureTimeoutMilliseconds/);
+  assert.match(runtime, /capture-frame-worker/);
+  assert.match(runtime, /ParentIsSameExecutable/);
+  assert.doesNotMatch(runtime, /CREATE_ALWAYS|OPEN_ALWAYS|TRUNCATE_EXISTING|OpenClipboard|SetClipboardData|WinHttp|URLDownload|socket\s*\(|send\s*\(/);
+});
+
+test('local Tesseract is hash-pinned and runs in a bounded job through memory pipes', async () => {
+  const root = resolve(testDirectory, '..', '..');
+  const runtime = await readFile(resolve(root, 'native', 'teams-captions', 'src', 'ocr_runtime.cpp'), 'utf8');
+  const setup = await readFile(resolve(root, 'scripts', 'setup-tesseract.ps1'), 'utf8');
+  assert.match(runtime, /ExpectedTesseractVersion = "5\.5\.3"/);
+  assert.match(runtime, /Sha256File\(paths\.executable\)/);
+  assert.match(runtime, /Sha256File\(paths\.japanese\)/);
+  assert.match(runtime, /Sha256File\(paths\.english\)/);
+  assert.match(runtime, /stdin stdout --tessdata-dir/);
+  assert.match(runtime, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/);
+  assert.match(runtime, /CREATE_SUSPENDED/);
+  assert.match(runtime, /AssignProcessToJobObject/);
+  assert.match(runtime, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE/);
+  assert.match(runtime, /OcrTimeoutMilliseconds/);
+  assert.match(runtime, /MaximumOcrOutputBytes/);
+  assert.match(setup, /Get-FileHash/);
+  assert.match(setup, /Expected Tesseract \$expectedVersion after hash verification/);
+  assert.doesNotMatch(setup, /Invoke-WebRequest|Start-BitsTransfer/);
+});
+
+test('raw OCR names and TSV are anonymized before framed output', async () => {
+  const root = resolve(testDirectory, '..', '..', 'native', 'teams-captions', 'src');
+  const speaker = await readFile(resolve(root, 'caption_speaker.h'), 'utf8');
+  const runtime = await readFile(resolve(root, 'ocr_runtime.cpp'), 'utf8');
+  const outputBoundary = runtime.slice(runtime.indexOf('bool EmitRowEvent'), runtime.indexOf('const char* DecisionReason'));
+  assert.match(speaker, /speaker-/);
+  assert.match(speaker, /std::fill\(entry\.name\.begin\(\), entry\.name\.end\(\), '\\0'\)/);
+  assert.ok(runtime.indexOf('bool EmitRowEvent') >= 0);
+  assert.ok(runtime.indexOf('const char* DecisionReason') >= 0);
+  assert.doesNotMatch(outputBoundary, /displayName|participant|tsv|bitmap|pixels/);
+  assert.doesNotMatch(runtime, /std::cerr|fprintf\s*\(\s*stderr|OutputDebugString/);
+});

@@ -43,15 +43,21 @@ OCR observationは`confidence`と`stableSamples`のどちらか一方だけを�
 
 UIA/OCRは`awaiting-consent`から利用者の同意確認を経て`selecting-target`へ進んだ場合だけactiveになれる。assemblerは選択済みactive sourceと一致する観測だけを受け入れ、観測自体によるactivation、source切替、degradedからの自動復帰を許可しない。UIAからOCRへの切替はcaption missing後の利用者操作を必要とする。音声＋Whisperへの切替はこのstate machine外のMVP入力mode選択で別途明示する。
 
-## OCR boundary reserved by this spike
+## Local OCR runtime
 
-OCR adapterはまだ有効化しない。実装時は次を満たす。
+OCR adapterはWindowsローカルcompanionからだけ起動する。全参加者同意のcheckboxと開始buttonを経て、foregroundのTeams client areaに限定したoverlayで利用者が字幕矩形をdragするまでpixelを取得しない。helper stdoutがanonymous pipeでない直接CLI実行もcapture前に拒否する。
 
-- 利用者が選んだphysical pixel矩形をDPI-aware座標で固定し、Teams window client boundsとの共通部分だけを取得する。
-- Teams windowが最小化、遮蔽、移動、DPI変更、対象外processになった場合はcaptureせずdegradedへ遷移する。
-- bitmap、OCR intermediate、raw speaker display nameをfile、clipboard、log、networkへ出さない。字幕行が`表示名: 発話`の形で得られた場合も、adapter内でprefixを分離してsession-only aliasへ変換し、`text`へ表示名を残さない。
-- 日本語language packのavailabilityを開始前に検出し、自動downloadしない。
-- confidence／連続安定性不足、speaker/text分割不能、複数行の対応不明を推測で埋めない。
+- physical pixel矩形はTeams client bounds内に完全包含し、最大2,560 × 720、BGRA 8 MiBとする。共通部分だけへの暗黙cropはしない。
+- 各frameでvisible、foreground、非最小化、DPI不変、矩形の四隅・中央が同じ`ms-teams.exe` processに属することを確認する。外れた場合はpixelを取得せずdegradedへ遷移する。
+- Teams window全体やscreen全体のbitmapは作らない。選択矩形寸法のmemory DCへ対象windowをclip描画する。provider hangは使い捨てframe workerを2秒で終了する。
+- bitmapは最大8 MiB、Tesseract TSVは最大512 KiB、framed eventは最大64 KiB、cadenceは最大2 frame/秒とする。
+- bitmap、OCR intermediate、raw speaker display nameをfile、clipboard、log、networkへ出さない。字幕行が`表示名: 発話`または`表示名：発話`の形で得られた場合も、native adapter内でprefixを分離してsession-only aliasへ変換し、`text`へ表示名を残さない。
+- Tesseract 5.5.3、`jpn`、`eng`はsetup時とsession開始時にSHA-256検証する。PATH探索とruntime downloadをしない。
+- Tesseractは`stdin`からmemory BMPを読み、`stdout`へTSVを返す。Job Object、process数1、512 MiB、5秒timeout、512 KiB stdout上限を適用する。
+- Tesseract confidence 85以上かつ同じspeaker/textを2 frame連続観測した場合だけobservationを送る。confidence不足、speaker/text分割不能、複数行の対応不明を推測で埋めない。
+- pauseはcapture processを停止してbufferを破棄する。resumeでは古い矩形を再利用せず、利用者が再選択する。
+
+Nativeからcompanionへは`TMO1` version 1、type 1のUTF-8 JSON frameだけを送る。eventは`state`、alias済み`observation`、`row-disappeared`、`tick`に限定し、画像、座標、寸法、PID、window title、raw display name、TSVを含めない。companionとbrowser adapterはexact-key schemaを再検証する。
 
 ## Automated evidence
 
