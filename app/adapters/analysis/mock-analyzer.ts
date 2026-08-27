@@ -30,15 +30,12 @@ function tempIdFor(id: string): string {
 export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], state: AnalysisState): AnalysisDelta {
   const finals = utterances.filter((item) => item.phase === 'final').slice(-8);
   const operations: AnalysisOperation[] = [];
-  const seen = new Set<string>();
   for (const utterance of finals) {
     const text = utterance.text.trim();
     if (!text) continue;
     const classified = classify(text);
-    const key = `${classified.kind}:${normalize(text.replace(/^(?:訂正|撤回)[:：]?\s*/, ''))}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const matching = state.items.find((item) => item.kind === classified.kind && (item.evidenceUtteranceIds.includes(utterance.id) || normalize(item.title) === normalize(titleFor(text))));
+    const matchingByEvidence = state.items.find((item) => item.evidenceUtteranceIds.includes(utterance.id));
+    const matching = matchingByEvidence ?? state.items.find((item) => item.provenance === 'ai-suggested' && item.kind === classified.kind && normalize(item.title) === normalize(titleFor(text)));
     if (matching) {
       if (matching.provenance === 'ai-suggested' && !matching.evidenceUtteranceIds.includes(utterance.id) && matching.evidenceUtteranceIds.length < maximumEvidenceIds) operations.push({ op: 'update', itemId: matching.id, title: null, detail: null, status: null, confidence: Math.max(matching.confidence, 0.72), addEvidenceUtteranceIds: [utterance.id], removeEvidenceUtteranceIds: [] });
       continue;

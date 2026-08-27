@@ -105,6 +105,19 @@ test('confirmed mock item is not duplicated and remains protected from later AI 
   }, meeting), /analysis-human-item-protected/);
 });
 
+test('a new utterance keeps its evidence even when its title matches a human item', () => {
+  const meeting = [
+    { id: 'human-title-u1', revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: 0, endMs: 10, text: '認証はOAuthで進めましょう' },
+    { id: 'human-title-u2', revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: 20, endMs: 30, text: '認証はOAuthで進めましょう' },
+  ];
+  const analyzed = applyAnalysisDelta(emptyAnalysisState, analyzeWithDeterministicMock(meeting.slice(0, 1), emptyAnalysisState), meeting.slice(0, 1));
+  const confirmed = applyHumanItemPatch(analyzed, analyzed.items[0].id, { confirm: true }, meeting);
+  const delta = analyzeWithDeterministicMock(meeting, confirmed);
+  const add = delta.operations.find((operation) => operation.op === 'add');
+  assert.ok(add);
+  assert.deepEqual(add.evidenceUtteranceIds, ['human-title-u2']);
+});
+
 test('keyboard selection replacement and scroll target keep a distant node visible', () => {
   assert.equal(visibleSelectionId('removed', ['first', 'second']), 'first');
   assert.equal(visibleSelectionId('second', ['first', 'second']), 'second');

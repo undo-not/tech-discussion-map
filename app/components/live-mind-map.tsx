@@ -13,14 +13,17 @@ const provenanceLabel = { 'ai-suggested': 'AI提案', 'human-confirmed': '人が
 
 type LiveMindMapProps = {
   analysisState: AnalysisState;
+  focusRequest?: { sequence: number; itemId?: string; evidenceUtteranceIds: string[] } | null;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
   onPatchItem: (itemId: string, patch: HumanItemPatch) => boolean;
+  onSelectionChange?: (itemId: string) => void;
+  operationStatus?: string;
 };
 
-export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, onPatchItem }: LiveMindMapProps) {
+export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRedo, onUndo, onRedo, onPatchItem, onSelectionChange, operationStatus = '' }: LiveMindMapProps) {
   const [layout, setLayout] = useState<MapLayout>({ positions: {} });
   const [selectedId, setSelectedId] = useState('');
   const [query, setQuery] = useState('');
@@ -38,6 +41,10 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   const lastFocusedNodeRef = useRef('');
   const degradedViewportTrackingRef = useRef<DegradedViewportTracking>({ processedKey: '', trackedScroll: null });
   const explicitReframeRef = useRef(false);
+  const renderedLayoutRef = useRef<MapLayout>({ positions: {} });
+  const zoomRef = useRef(1);
+  const degradedRef = useRef(false);
+  const degradedFilterKeyRef = useRef('');
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setLayout((current) => analysisState.revision === 0 && analysisState.items.length === 0 ? resetMapLayout() : reconcileMapLayout(current, analysisState)));
@@ -60,6 +67,13 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   const canvasHeight = mapCanvasHeight(renderedLayout, visibleIds);
   const degradedFilterKey = degradedViewportFilterKey(query, kindFilter, showTombstones, zoom, reframeGeneration);
 
+  useLayoutEffect(() => {
+    renderedLayoutRef.current = renderedLayout;
+    zoomRef.current = zoom;
+    degradedRef.current = degraded;
+    degradedFilterKeyRef.current = degradedFilterKey;
+  }, [degraded, degradedFilterKey, renderedLayout, zoom]);
+
   const focusNode = (id: string, preserveAutomaticFollowing = false) => {
     if (editingItemId && editingItemId !== id) {
       setEditing(false);
@@ -67,17 +81,37 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
     }
     setEditError('');
     setSelectedId(id);
+    onSelectionChange?.(id);
     requestAnimationFrame(() => {
       const node = document.getElementById(`map-node-${id}`);
       const viewport = viewportRef.current;
       node?.focus({ preventScroll: true });
-      const position = renderedLayout.positions[id];
+      const currentLayout = renderedLayoutRef.current;
+      const currentZoom = zoomRef.current;
+      const position = currentLayout.positions[id];
       if (!viewport || !position) return;
-      const target = scrollTargetForNode({ scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop, width: viewport.clientWidth, height: viewport.clientHeight }, position, zoom);
-      if (degraded) degradedViewportTrackingRef.current = { processedKey: degradedFilterKey, trackedScroll: preserveAutomaticFollowing ? target : null };
+      const target = scrollTargetForNode({ scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop, width: viewport.clientWidth, height: viewport.clientHeight }, position, currentZoom);
+      if (degradedRef.current) degradedViewportTrackingRef.current = { processedKey: degradedFilterKeyRef.current, trackedScroll: preserveAutomaticFollowing ? target : null };
       viewport.scrollTo({ left: target.left, top: target.top, behavior: 'auto' });
     });
   };
+
+  useEffect(() => {
+    if (!focusRequest) return;
+    const requested = focusRequest.itemId ? analysisState.items.find((item) => item.id === focusRequest.itemId) : undefined;
+    const target = requested ?? [...analysisState.items].reverse().find((item) => focusRequest.evidenceUtteranceIds.some((id) => item.evidenceUtteranceIds.includes(id)));
+    if (!target) return;
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      setQuery('');
+      setKindFilter('all');
+      if (['withdrawn', 'superseded'].includes(target.status)) setShowTombstones(true);
+      secondFrame = requestAnimationFrame(() => focusNode(target.id, true));
+    });
+    return () => { cancelAnimationFrame(firstFrame); if (secondFrame) cancelAnimationFrame(secondFrame); };
+    // A sequence is a one-shot navigation command. Later analysis revisions must not steal focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRequest?.sequence]);
 
   useEffect(() => {
     const nextId = visibleSelectionId(selectedId, visibleItems.map((item) => item.id));
@@ -90,7 +124,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
         setEditingItemId('');
       }
       if (shouldRestoreFocus && nextId) focusNode(nextId, true);
-      else setSelectedId(nextId);
+      else { setSelectedId(nextId); if (nextId) onSelectionChange?.(nextId); }
     });
     return () => cancelAnimationFrame(frame);
     // focusNode intentionally uses the latest rendered layout and zoom for a user-visible selection replacement.
@@ -164,7 +198,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
           <button disabled={!canUndo} onClick={onUndo} className="map-tool border bg-white disabled:opacity-40">元に戻す</button>
           <button disabled={!canRedo} onClick={onRedo} className="map-tool border bg-white disabled:opacity-40">やり直す</button>
           <button aria-label="縮小" onClick={() => setZoom((value) => Math.max(.55, value - .1))} className="map-tool border bg-white">−</button>
-          <button onClick={() => { explicitReframeRef.current = true; setZoom(1); setReframeGeneration((value) => value + 1); }} className="map-tool border bg-white">全体</button>
+          <button onClick={() => { explicitReframeRef.current = true; setZoom(1); setReframeGeneration((value) => value + 1); }} className="map-tool border bg-white">先頭へ</button>
           <button aria-label="拡大" onClick={() => setZoom((value) => Math.min(1.35, value + .1))} className="map-tool border bg-white">＋</button>
         </div>
         <div className="flex w-full flex-wrap gap-2">
@@ -175,7 +209,8 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
       </div>
 
       {degraded && <p role="status" className="z-20 bg-[#fff4d9] px-3 py-2 text-xs font-semibold text-[#76551f]">大規模会議の縮退表示: 最新の{maximumRenderedNodes} nodeを表示中。検索・filterで対象を絞ってください。</p>}
-      <div ref={viewportRef} className="mindmap-grid relative flex-1 overflow-auto" aria-label="マップviewport">
+      {operationStatus && <p role="status" aria-live="polite" className="z-20 border-b border-[#d2dad4] bg-white px-3 py-1.5 text-xs text-[#52615c]">{operationStatus}</p>}
+      <div ref={viewportRef} role="region" tabIndex={0} className="mindmap-grid relative flex-1 overflow-auto" aria-label="マップviewport">
         <div className="relative origin-top-left transition-transform" style={{ width: 1_000, height: canvasHeight, transform: `scale(${zoom})` }}>
           <svg aria-hidden="true" className="absolute inset-0 h-full w-full overflow-visible">
             {visibleItems.flatMap((item) => item.links.filter((link) => visibleIds.has(link.targetId)).map((link) => {
@@ -186,7 +221,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
           </svg>
           {visibleItems.map((item) => {
             const position = renderedLayout.positions[item.id] ?? { x: 0, y: 0 };
-            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => { if (editingItemId && editingItemId !== item.id) { setEditing(false); setEditingItemId(''); } setEditError(''); setSelectedId(item.id); }} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
+            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => { if (editingItemId && editingItemId !== item.id) { setEditing(false); setEditingItemId(''); } setEditError(''); setSelectedId(item.id); onSelectionChange?.(item.id); }} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
               <span className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase"><span>{kindLabels[item.kind]} · {item.status}</span><span className={item.provenance === 'ai-suggested' ? 'text-[#8a5a16]' : 'text-[#176044]'}>{provenanceLabel[item.provenance]}</span></span>
               <strong className="mt-1 block line-clamp-2 text-sm">{item.title}</strong>
               <span className="mt-1 block truncate text-[10px] text-[#52615c]">根拠 {item.evidenceUtteranceIds.join(' · ')}</span>
@@ -196,7 +231,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
         </div>
       </div>
 
-      {selected && <aside aria-label="選択nodeの詳細" className="z-20 border-t border-[#d2dad4] bg-white/95 p-3 text-xs">
+      {selected && <aside aria-label="選択nodeの詳細" aria-live="polite" className="z-20 border-t border-[#d2dad4] bg-white/95 p-3 text-xs">
         {editing ? <div onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); const focusId = editingItemId; setEditError(''); setEditing(false); setEditingItemId(''); requestAnimationFrame(() => focusNode(focusId, true)); } }} className="grid gap-2 md:grid-cols-[1fr_2fr_auto]">
           <input ref={titleInputRef} aria-label="node title" value={draftTitle} maxLength={160} onChange={(event) => setDraftTitle(event.target.value)} className="rounded border px-2 py-1" />
           <div><input aria-label="node detail" value={draftDetail} maxLength={600} onChange={(event) => setDraftDetail(event.target.value)} className="w-full rounded border px-2 py-1" /><p className="mt-1 text-[10px] text-[#76551f]">OpenAI分析を許可している場合、この編集内容もredaction後の次回contextに含まれます。社外秘の固有名詞は入力前に確認してください。</p></div>

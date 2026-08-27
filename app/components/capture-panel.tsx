@@ -163,7 +163,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisState]);
 
-  const scheduleAnalysis = (transcriptState: TranscriptState, requestedMode = analysisModeRef.current, persistResult = true) => {
+  const scheduleAnalysis = (transcriptState: TranscriptState, requestedMode = analysisModeRef.current) => {
     const generation = analysisGenerationRef.current;
     analysisChain.current = analysisChain.current.then(async () => {
       if (generation !== analysisGenerationRef.current) return;
@@ -185,7 +185,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current) { setAnalysisStatus('分析中に外部送信許可が解除されたため、結果を適用しませんでした。'); return; }
           if (delta.operations.length === 0) { setAnalysisStatus('OpenAI分析: 構造上の変化はありません。'); return; }
           const next = applyAnalysisDelta(getAnalysisState(), delta, transcriptRef.current.utterances);
-          publishAnalysisState(next); if (persistResult) persistSnapshot(transcriptRef.current);
+          publishAnalysisState(next);
           setAnalysisStatus(`OpenAI分析をrevision ${next.revision}へ原子的に適用しました。`);
         } finally { setOpenAiInFlight((value) => Math.max(0, value - 1)); }
         return;
@@ -197,7 +197,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       const delta = analyzeWithDeterministicMock(currentTranscript.utterances, currentState);
       if (delta.operations.length === 0) { setAnalysisStatus('local mock: 構造上の変化はありません。'); return; }
       const next = applyAnalysisDelta(getAnalysisState(), delta, currentTranscript.utterances);
-      publishAnalysisState(next); if (persistResult) persistSnapshot(currentTranscript);
+      publishAnalysisState(next);
       setAnalysisStatus(`local mockをrevision ${next.revision}へ更新しました。`);
     }).catch((error: unknown) => {
       if (error instanceof Error && error.message === 'analysis-stale-revision') {
@@ -217,11 +217,11 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
         analysisDebounceRef.current = setTimeout(() => {
           analysisDebounceRef.current = null;
-          scheduleAnalysis(transcriptRef.current, 'openai', true);
+          scheduleAnalysis(transcriptRef.current, 'openai');
         }, 10_000);
         setAnalysisStatus('OpenAI分析: 最新の確定発話を10秒windowでまとめています。');
       } else {
-        scheduleAnalysis(next, 'mock', event.source !== 'synthetic');
+        scheduleAnalysis(next, 'mock');
       }
     }
   };
@@ -437,7 +437,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       <div className="mx-auto mt-2 grid max-w-[1600px] gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs lg:grid-cols-[auto_1fr]">
         <div className="flex flex-wrap items-center gap-2">
           <label>分析mode <select value={analysisMode} onChange={(event) => { const mode = event.target.value as 'mock' | 'openai'; if (mode === 'mock' && analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; } analysisModeRef.current = mode; setAnalysisMode(mode); }} className="ml-1 rounded border px-2 py-1"><option value="mock">local deterministic mock</option><option value="openai" disabled={inputMode === 'synthetic' || !externalAnalysisAllowed || !dataControlsAttested || !privacyStatus?.credentialConfigured}>OpenAI gpt-5-mini</option></select></label>
-          <button disabled={!transcript.utterances.some((item) => item.phase === 'final')} onClick={() => { if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; } scheduleAnalysis(transcriptRef.current, analysisMode, inputMode !== 'synthetic'); }} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">分析を更新</button>
+          <button disabled={!transcript.utterances.some((item) => item.phase === 'final')} onClick={() => { if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; } scheduleAnalysis(transcriptRef.current, analysisMode); }} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">分析を更新</button>
           <span>{analysisStatus}</span>
         </div>
         <div aria-live="polite" className="flex min-w-0 flex-wrap gap-2">
