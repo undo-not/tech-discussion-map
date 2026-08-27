@@ -9,6 +9,7 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 ## Repository layout
 
 - `app/`: 共通UI層と、Sites/Vinextによる合成データreview surface
+- `native/windows-audio/`: Teams process treeだけを対象にするWindows音声helper
 - `docs/specs/`: 現在のproduct behavior
 - `docs/policies/`: Issue、PR、データ、agent協働の運用規約
 - `docs/adr/`: 永続的な技術判断
@@ -25,3 +26,5 @@ pnpm run dev
 ```
 
 検証コマンドは[AGENTS.md](AGENTS.md)を参照してください。
+
+Windows音声helperのbuildと非capturing capability checkは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。実会議captureはIssue #6の同意・privacy gateが完成するまで実行しません。
