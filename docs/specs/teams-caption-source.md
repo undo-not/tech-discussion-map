@@ -51,7 +51,7 @@ OCR adapterはWindowsローカルcompanionからだけ起動する。全参加�
 - 各frameでvisible、foreground、非最小化、DPI不変、矩形の四隅・中央が同じ`ms-teams.exe` processに属することを確認する。外れた場合はpixelを取得せずdegradedへ遷移する。
 - Teams window全体やscreen全体のbitmapは作らない。選択矩形寸法のmemory DCへ対象windowをclip描画する。provider hangは使い捨てframe workerを2秒で終了する。
 - bitmapは最大8 MiB、Tesseract TSVは最大512 KiB、framed eventは最大64 KiB、cadenceは最大2 frame/秒とする。
-- bitmap、OCR intermediate、raw speaker display nameをfile、clipboard、log、networkへ出さない。字幕行が`表示名: 発話`または`表示名：発話`の形で得られた場合も、native adapter内でprefixを分離してsession-only aliasへ変換し、`text`へ表示名を残さない。
+- bitmap、OCR intermediate、raw speaker display nameをfile、clipboard、log、networkへ出さない。字幕行が`表示名: 発話`または`表示名：発話`として明確に分離できた場合だけ、native adapter内でprefixをsession-only aliasへ変換する。speaker/body境界がない行は表示名混入の可能性があるため、`unknown`本文として推測せず行全体をdropする。`Anonymous`／`Speaker`／`匿名`／`話者`の固定labelだけは`anonymous`へ正規化する。
 - Tesseract 5.5.3、`jpn`、`eng`はsetup時とsession開始時にSHA-256検証する。PATH探索とruntime downloadをしない。
 - Tesseractは`stdin`からmemory BMPを読み、`stdout`へTSVを返す。Job Object、process数1、512 MiB、5秒timeout、512 KiB stdout上限を適用する。
 - Tesseract confidence 85以上かつ同じspeaker/textを2 frame連続観測した場合だけobservationを送る。confidence不足、speaker/text分割不能、複数行の対応不明を推測で埋めない。

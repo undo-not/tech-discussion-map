@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,12 +26,12 @@ public:
     SpeakerAliasTable& operator=(const SpeakerAliasTable&) = delete;
     ~SpeakerAliasTable() { Clear(); }
 
-    SafeCaptionLine Anonymize(const ParsedCaptionLine& input) {
+    std::optional<SafeCaptionLine> Anonymize(const ParsedCaptionLine& input) {
         const std::size_t asciiColon = input.text.find(':');
         const std::size_t fullWidthColon = input.text.find("：");
         const std::size_t separator = std::min(asciiColon, fullWidthColon);
         if (separator == std::string::npos || separator == 0 || separator > 256) {
-            return {input.lineKey, "unknown", {}, input.text, input.confidence};
+            return std::nullopt;
         }
         const std::size_t colonBytes = separator == fullWidthColon ? std::string_view("：").size() : 1;
         std::string_view name(input.text.data(), separator);
@@ -38,11 +39,14 @@ public:
         Trim(name);
         Trim(body);
         if (name.empty() || body.empty() || HasUnsafeName(name)) {
-            return {input.lineKey, "unknown", {}, input.text, input.confidence};
+            return std::nullopt;
+        }
+        if (name == "Anonymous" || name == "Speaker" || name == "匿名" || name == "話者") {
+            return SafeCaptionLine{input.lineKey, "anonymous", {}, std::string(body), input.confidence};
         }
         const std::string alias = AliasFor(name);
-        if (alias.empty()) return {input.lineKey, "unknown", {}, std::string(body), input.confidence};
-        return {input.lineKey, "displayed-alias", alias, std::string(body), input.confidence};
+        if (alias.empty()) return SafeCaptionLine{input.lineKey, "unknown", {}, std::string(body), input.confidence};
+        return SafeCaptionLine{input.lineKey, "displayed-alias", alias, std::string(body), input.confidence};
     }
 
     void Clear() noexcept {

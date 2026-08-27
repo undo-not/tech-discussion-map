@@ -49,12 +49,13 @@ int main() {
 
     SpeakerAliasTable aliases;
     const auto safe = aliases.Anonymize(parsed[0]);
-    Require(safe.speaker == "displayed-alias" && safe.speakerAlias == "speaker-1", "display name not anonymized");
-    Require(safe.text == "synthetic design" && safe.text.find("Alice") == std::string::npos, "display name leaked into text");
+    Require(safe && safe->speaker == "displayed-alias" && safe->speakerAlias == "speaker-1", "display name not anonymized");
+    Require(safe->text == "synthetic design" && safe->text.find("Alice") == std::string::npos, "display name leaked into text");
     const auto same = aliases.Anonymize({"2", "Alice: another", 95});
-    Require(same.speakerAlias == "speaker-1", "alias not stable");
-    const auto unknown = aliases.Anonymize({"3", "synthetic without prefix", 95});
-    Require(unknown.speaker == "unknown" && unknown.speakerAlias.empty(), "unknown speaker inferred");
+    Require(same && same->speakerAlias == "speaker-1", "alias not stable");
+    Require(!aliases.Anonymize({"3", "possible raw name without boundary", 95}), "ambiguous line crossed identity boundary");
+    const auto anonymous = aliases.Anonymize({"4", "匿名：合成発話", 95});
+    Require(anonymous && anonymous->speaker == "anonymous" && anonymous->speakerAlias.empty(), "anonymous speaker not normalized");
     aliases.Clear();
     Require(aliases.Size() == 0, "alias table not cleared");
 

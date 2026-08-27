@@ -35,7 +35,7 @@ export function parseCaptionRuntimeEvent(value: unknown): CaptionRuntimeEvent {
       : ['confidence', 'observedAtMs', 'revision', 'rowId', 'source', 'speaker', 'text', 'type', 'v'];
     if (!exactKeys(item, expected) || typeof item.rowId !== 'string' || !rowIdPattern.test(item.rowId) ||
         !Number.isSafeInteger(item.revision) || (item.revision as number) < 1 || item.source !== 'teams-ocr' ||
-        !['displayed-alias', 'unknown'].includes(item.speaker as string) ||
+        !['displayed-alias', 'anonymous', 'unknown'].includes(item.speaker as string) ||
         (hasAlias ? typeof item.speakerAlias !== 'string' || !aliasPattern.test(item.speakerAlias) : item.speakerAlias !== undefined) ||
         !Number.isSafeInteger(item.observedAtMs) || (item.observedAtMs as number) < 0 ||
         typeof item.text !== 'string' || item.text.length === 0 || item.text.length > 8_000 ||
@@ -48,7 +48,7 @@ export function parseCaptionRuntimeEvent(value: unknown): CaptionRuntimeEvent {
         rowId: item.rowId,
         revision: item.revision as number,
         source: 'teams-ocr',
-        speaker: item.speaker as 'displayed-alias' | 'unknown',
+        speaker: item.speaker as 'displayed-alias' | 'anonymous' | 'unknown',
         ...(typeof item.speakerAlias === 'string' ? { speakerAlias: item.speakerAlias } : {}),
         observedAtMs: item.observedAtMs as number,
         text: item.text,

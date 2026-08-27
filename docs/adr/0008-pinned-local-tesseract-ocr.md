@@ -19,7 +19,7 @@ Tesseract projectはsource releaseを提供するが、このrepositoryはWindow
 - runtimeは毎session開始前にmanifestと3ファイルのSHA-256を再検証する。
 - Tesseractは選択矩形だけを持つmemory BMPをstdinで受け、TSVをstdoutへ返す。file output、clipboard、debug output、networkを使わない。
 - 子processは継承handleをstdin/stdout/NUL stderrに限定し、Job Object、process数1、memory上限、5秒timeoutを適用する。
-- TSVのstrict parse、speaker prefix分離、session-only alias化、2回連続安定性判定はnative process内で完了する。raw表示名とTSVをcompanionへ渡さない。
+- TSVのstrict parse、speaker prefix分離、session-only alias化、2回連続安定性判定はnative process内で完了する。speaker/bodyを明確に分離できない行は表示名混入を避けるためdropし、raw表示名とTSVをcompanionへ渡さない。
 - OCR画像とTSV bufferは使用後にzero化し、永続化対象にしない。
 
 ## Capture boundary

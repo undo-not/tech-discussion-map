@@ -32,6 +32,9 @@ test('caption runtime parser rejects raw identity, unknown fields, and low confi
   assert.throws(() => parseCaptionRuntimeEvent({ ...observationFrame, rawDisplayName: 'Example Person' }), /invalid-caption-runtime-observation/);
   assert.throws(() => parseCaptionRuntimeEvent({ ...observationFrame, confidence: 84 }), /invalid-caption-runtime-observation/);
   assert.throws(() => parseCaptionRuntimeEvent({ ...observationFrame, speakerAlias: 'Example Person' }), /invalid-caption-runtime-observation/);
+  const anonymousFrame = { ...observationFrame, speaker: 'anonymous' };
+  delete anonymousFrame.speakerAlias;
+  assert.equal(parseCaptionRuntimeEvent(anonymousFrame).observation.speaker, 'anonymous');
   assert.deepEqual(parseCaptionRuntimeEvent({ v: 1, type: 'state', state: 'selecting-target', reason: 'user-selection-required' }), {
     type: 'state', state: 'selecting-target', reason: 'user-selection-required',
   });

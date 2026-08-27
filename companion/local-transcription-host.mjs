@@ -109,7 +109,7 @@ function validateCaptionWorkerEvent(value) {
       : ['confidence', 'observedAtMs', 'revision', 'rowId', 'source', 'speaker', 'text', 'type', 'v'];
     if (!exactKeys(value, expected) || !/^ocr-[a-f0-9]{8}-[1-9][0-9]{0,8}$/.test(value.rowId) ||
         !Number.isSafeInteger(value.revision) || value.revision < 1 || value.source !== 'teams-ocr' ||
-        !['displayed-alias', 'unknown'].includes(value.speaker) ||
+        !['displayed-alias', 'anonymous', 'unknown'].includes(value.speaker) ||
         (hasAlias ? typeof value.speakerAlias !== 'string' || !/^speaker-[1-9][0-9]{0,2}$/.test(value.speakerAlias) : value.speakerAlias !== undefined) ||
         !Number.isSafeInteger(value.observedAtMs) || value.observedAtMs < 0 || typeof value.text !== 'string' || value.text.length === 0 || value.text.length > 8_000 ||
         !Number.isInteger(value.confidence) || value.confidence < 85 || value.confidence > 100) throw new Error('invalid-caption-observation-event');

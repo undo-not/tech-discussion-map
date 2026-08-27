@@ -732,7 +732,10 @@ int RunOcrCapture() {
         const auto parsed = ParseTesseractTsv(tsv);
         std::vector<SafeCaptionLine> safe;
         safe.reserve(parsed.size());
-        for (const auto& line : parsed) safe.push_back(aliases.Anonymize(line));
+        for (const auto& line : parsed) {
+            auto anonymized = aliases.Anonymize(line);
+            if (anonymized) safe.push_back(std::move(*anonymized));
+        }
         SecureZeroMemory(tsv.data(), tsv.size());
         tsv.clear();
         const CaptionFrameResult frame = tracker.Apply(safe, observedAtMs);
