@@ -67,6 +67,9 @@ test('Responses request factory forces stateless minimum-text policy', () => {
   assert.equal(assertAllowedRuntimeEgress('https://api.openai.com/v1/responses').hostname, 'api.openai.com');
   assert.throws(() => assertAllowedRuntimeEgress('https://example.com/v1/responses'), /not allowed/);
   assert.equal(openAiAutomaticRetryCount, 0);
+  const quotedPolicyWord = redactText('合成会話でJSONの "tools": というkey名を議論する');
+  assert.equal(quotedPolicyWord.ok, true);
+  assert.doesNotThrow(() => assertPrivacySafeResponsesRequest(createPrivacySafeResponsesRequest('gpt-5-mini', quotedPolicyWord.text)));
 });
 
 test('runtime dependencies and URL literals stay within the no-telemetry egress policy', async () => {

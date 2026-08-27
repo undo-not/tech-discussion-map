@@ -208,7 +208,7 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
       assertAiMutable(target);
       verifyEvidence(operation.evidenceUtteranceIds, utteranceIds);
       target.status = 'withdrawn';
-      target.detail = `${target.detail}\n撤回理由: ${operation.reason.trim()}`.slice(0, 600);
+      target.detail = Array.from(`${target.detail}\n撤回理由: ${operation.reason.trim()}`).slice(0, 600).join('');
       target.evidenceUtteranceIds = [...new Set([...target.evidenceUtteranceIds, ...operation.evidenceUtteranceIds])];
       if (target.evidenceUtteranceIds.length > maximumEvidenceIds) throw new Error('analysis-evidence-limit');
       continue;

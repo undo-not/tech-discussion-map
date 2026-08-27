@@ -76,6 +76,18 @@ test('state projection is redacted again before outbound analysis', () => {
   const outbound = createRedactedAnalysisInput(window.text, state);
   assert.doesNotMatch(outbound, /user@example|synthetic-secret/);
   assert.match(outbound, /REDACTED_EMAIL|REDACTED_CREDENTIAL/);
+  assert.match(outbound, /CURRENT_STATE_REVISION:0/);
+});
+
+test('context bounds retain whole evidence lines and reject a lone oversize line', () => {
+  const redacted = redactText(`${'x'.repeat(4_100)}\n{"id":"kept-evidence"}`);
+  assert.equal(redacted.ok, true);
+  const outbound = createRedactedAnalysisInput(redacted.text, emptyAnalysisState);
+  assert.match(outbound, /kept-evidence/);
+  assert.doesNotMatch(outbound, /x{20}/);
+  const oversize = redactText('x'.repeat(4_100));
+  assert.equal(oversize.ok, true);
+  assert.throws(() => createRedactedAnalysisInput(oversize.text, emptyAnalysisState), /line-too-large/);
 });
 
 test('state validation and atomic apply enforce evidence bounds even without transcript evidence', () => {
@@ -124,12 +136,16 @@ test('expired local bearer is re-bootstrapped once without changing OpenAI retry
   ];
   const analyzer = new LocalOpenAiAnalyzer({
     launchSecret: () => 'c'.repeat(64),
-    fetchImpl: async (url, init) => { calls.push({ url: String(url), authorization: new Headers(init.headers).get('Authorization') }); return responses.shift(); },
+    fetchImpl: async (url, init) => { calls.push({ url: String(url), authorization: new Headers(init.headers).get('Authorization'), body: init.body }); return responses.shift(); },
   });
   const redacted = redactText('合成された再認証test');
   assert.equal(redacted.ok, true);
-  const delta = await analyzer.analyze('gpt-5-mini', redacted.text, emptyAnalysisState);
+  const stateAtRevisionSeven = { ...emptyAnalysisState, revision: 7 };
+  const delta = await analyzer.analyze('gpt-5-mini', redacted.text, stateAtRevisionSeven);
   assert.equal(delta.operations.length, 0);
+  assert.equal(delta.baseRevision, 7);
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ['/v1/bootstrap', '/v1/analysis', '/v1/bootstrap', '/v1/analysis']);
   assert.deepEqual(calls.filter((call) => call.authorization).map((call) => call.authorization), [`Bearer ${tokenA}`, `Bearer ${tokenB}`]);
+  const sent = JSON.parse(calls.find((call) => call.authorization).body);
+  assert.match(sent.input[0].content[0].text, /CURRENT_STATE_REVISION:7/);
 });

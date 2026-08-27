@@ -54,7 +54,7 @@ export class LocalOpenAiAnalyzer {
     }
     if (!response.ok) throw new Error(`analysis-companion-${response.status}`);
     const output = parseAnalyzerOutput(JSON.parse(extractOutputText(await response.json())));
-    return { ...output, deltaId: crypto.randomUUID(), model, promptHash: analysisPromptHash, schemaHash: analysisSchemaHash };
+    return { ...output, baseRevision: state.revision, deltaId: crypto.randomUUID(), model, promptHash: analysisPromptHash, schemaHash: analysisSchemaHash };
   }
 
   async #postAnalysis(request: ReturnType<typeof createPrivacySafeStructuredResponsesRequest>): Promise<Response> {

@@ -246,7 +246,10 @@ bool SendResponsesRequest(const std::vector<std::uint8_t>& input, std::vector<st
     PCREDENTIALW rawCredential = nullptr;
     if (!CredReadW(CredentialTarget.data(), CRED_TYPE_GENERIC, 0, &rawCredential) || rawCredential == nullptr) return false;
     std::unique_ptr<CREDENTIALW, decltype(&CredFree)> credential(rawCredential, CredFree);
-    if (rawCredential->CredentialBlobSize < 20 || rawCredential->CredentialBlobSize > MaximumCredentialBytes) return false;
+    if (rawCredential->CredentialBlobSize < 20 || rawCredential->CredentialBlobSize > MaximumCredentialBytes) {
+        if (rawCredential->CredentialBlob != nullptr && rawCredential->CredentialBlobSize > 0) SecureZeroMemory(rawCredential->CredentialBlob, rawCredential->CredentialBlobSize);
+        return false;
+    }
     std::vector<std::uint8_t> key(rawCredential->CredentialBlob, rawCredential->CredentialBlob + rawCredential->CredentialBlobSize);
     SecureZeroMemory(rawCredential->CredentialBlob, rawCredential->CredentialBlobSize);
     if (!ValidCredential(key)) { if (!key.empty()) SecureZeroMemory(key.data(), key.size()); return false; }

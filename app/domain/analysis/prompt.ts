@@ -8,15 +8,28 @@ export const analysisPrompt = `成果: 技術ディスカッションの新し�
 
 export const analysisPromptHash = 'ffe60550ed0082b61ae1cca06272884c2efaf7cbdffe71d95c42cfa1e88a9219';
 
+function takeWholeLinesFromEnd(value: string, maximum: number): string {
+  const selected: string[] = [];
+  let length = 0;
+  for (const line of value.split('\n').reverse()) {
+    const added = line.length + (selected.length > 0 ? 1 : 0);
+    if (added > maximum && selected.length === 0) throw new Error('analysis-context-line-too-large');
+    if (length + added > maximum) break;
+    selected.push(line);
+    length += added;
+  }
+  return selected.reverse().join('\n');
+}
+
 export function createRedactedAnalysisInput(redactedWindow: RedactedText, state: AnalysisState): RedactedText {
   const projection = state.items
     .filter((item) => item.status !== 'withdrawn')
     .slice(-40)
     .map((item) => `${item.id}|${item.kind}|${item.provenance}|${item.status}|${item.title}|${item.detail.slice(0, 180)}|evidence=${item.evidenceUtteranceIds.join(',')}`)
     .join('\n');
-  const boundedWindow = Array.from(redactedWindow).slice(-4_000).join('');
-  const boundedProjection = Array.from(projection).slice(-1_500).join('');
-  const combined = `${analysisPrompt}\n\nREDACTED_UTTERANCE_WINDOW:\n${boundedWindow}\n\nREDACTED_STATE_PROJECTION:\n${boundedProjection || '(empty)'}`;
+  const boundedWindow = takeWholeLinesFromEnd(redactedWindow, 4_000);
+  const boundedProjection = projection ? takeWholeLinesFromEnd(projection, 2_000) : '';
+  const combined = `${analysisPrompt}\n\nCURRENT_STATE_REVISION:${state.revision}\n\nREDACTED_UTTERANCE_WINDOW:\n${boundedWindow}\n\nREDACTED_STATE_PROJECTION:\n${boundedProjection || '(empty)'}`;
   const result = redactText(combined);
   if (!result.ok) throw new Error(`analysis-context-${result.reason}`);
   return result.text;
