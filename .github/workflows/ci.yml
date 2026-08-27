@@ -42,3 +42,20 @@ jobs:
           else
             git diff --check --root HEAD
           fi
+
+  native-audio:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure native audio helper
+        run: cmake -S native/windows-audio -B native/windows-audio/build -A x64
+      - name: Build native audio helper
+        run: cmake --build native/windows-audio/build --config Release
+      - name: Test native state machine
+        run: ctest --test-dir native/windows-audio/build -C Release --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: techmap-audio-windows-x64
+          path: native/windows-audio/build/Release/techmap-audio.exe
+          if-no-files-found: error
+          retention-days: 7
