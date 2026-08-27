@@ -1,6 +1,6 @@
 # ADR-0001: Web companion with adapter boundaries
 
-- Status: Accepted
+- Status: Accepted, amended by ADR-0002
 
 ## Context
 
@@ -8,9 +8,9 @@ The product must provide immediate visual value during a Teams meeting while Tea
 
 ## Decision
 
-Build a responsive web companion in `app/` using TypeScript, React, and the Sites/Vinext stack. Keep the meeting workspace and typed domain model independent from input, transcription, analysis, Teams, and persistence adapters. Use deterministic demo data as the first adapter and require explicit Issues before connecting sensitive or external adapters.
+Build a responsive web companion in `app/` using TypeScript, React, and the Sites/Vinext stack. Keep the meeting workspace and typed domain model independent from input, transcription, analysis, Teams, and persistence adapters. Use deterministic demo data as the first adapter and require explicit Issues before connecting sensitive or external adapters. ADR-0002 narrows the production runtime to a Windows-local companion and reserves Sites for synthetic UI review.
 
-The domain model preserves source utterance references and distinguishes AI suggestions from human-confirmed content. Raw audio is not persisted by default.
+The domain model preserves source utterance references and distinguishes AI suggestions from human-confirmed content. Raw audio is not persisted. Local transcript and analysis persistence follows the lifecycle defined by Issue #6.
 
 ## Consequences
 

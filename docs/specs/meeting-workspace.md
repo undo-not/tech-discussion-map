@@ -17,9 +17,13 @@ TechMap Liveは、会議を進行している最中に会話の構造を見え�
 
 ## Input boundary
 
-入力はadapterを介して取り込む。初期adapterは決定論的なデモ会話である。マイク、Teams、transcription providerは、UIとdomain modelから分離した後続adapterとして追加する。
+入力はadapterを介して取り込む。合成デモadapterは公開UI reviewに使用できる。実会議adapterはWindowsローカルruntimeで動作し、利用者のmicrophoneとTeams processに限定したapplication loopbackを別streamとして取得する。capture、transcription、Teams、analysis、persistenceはUIとdomain modelから分離する。
 
-実音声の取得は利用者の明示操作と参加者同意を必要とする。生音声は既定で永続化しない。
+実音声の取得は利用者の明示操作と参加者同意を必要とする。生音声は永続化しない。文字起こしと分析状態はGit working tree外へローカル保存できる。未保存sessionは会議終了時に削除し、保存sessionは利用者が保持期間と削除対象を確認できなければならない。OpenAI APIへは#3と#6の境界を通過したtextだけを送信できる。
+
+実会議データを扱えるruntimeはpublic URLを持たず、local serverを使う場合はloopback interfaceだけへbindする。capture状態は`active`、`remote-audio-undetected`、`degraded-microphone-only`、`stopped`を区別して常時表示する。Teams process、audio stream、deviceの喪失時に正常動作を装ってはならない。
+
+Microsoft Graph transcriptは会議終了後の照合にだけ使用でき、live mapの入力にはしない。Teams live captionsのDOM／screen scrapingを入力方式にしてはならない。Azure media botまたはHTTPS hosted meeting side panelを導入する場合は、local-only境界の変更と新しいADRを必要とする。
 
 ## Accessibility and resilience
 
