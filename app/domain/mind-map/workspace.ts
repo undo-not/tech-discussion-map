@@ -6,7 +6,8 @@ export type MapLayout = { positions: Record<string, MapPosition> };
 export type MapViewport = { scrollLeft: number; scrollTop: number; width: number; height: number };
 export type AnalysisHistory = { past: AnalysisState[]; present: AnalysisState; future: AnalysisState[] };
 export type HumanItemPatch = { title?: string; detail?: string; status?: AnalysisItem['status']; confirm?: boolean };
-export type DegradedAutoPosition = { shouldPosition: boolean; nextKey: string };
+export type DegradedViewportTracking = { processedKey: string; trackedScroll: { left: number; top: number } | null };
+export type DegradedViewportDecision = { shouldEvaluate: boolean; next: DegradedViewportTracking };
 
 export const maximumHistoryEntries = 50;
 export const maximumRenderedNodes = 100;
@@ -130,9 +131,18 @@ export function canCommitMapEdit(editingItemId: string, selectedItemId: string):
   return editingItemId !== '' && editingItemId === selectedItemId;
 }
 
-export function degradedAutoPosition(previousKey: string, filterKey: string, degraded: boolean): DegradedAutoPosition {
-  if (!degraded) return { shouldPosition: false, nextKey: '' };
-  return { shouldPosition: previousKey !== filterKey, nextKey: filterKey };
+export function degradedViewportFilterKey(query: string, kind: AnalysisKind | 'all', showTombstones: boolean, zoom: number, reframeGeneration: number): string {
+  return `${query}\u0000${kind}\u0000${showTombstones ? 'tombstones' : 'active'}\u0000${zoom}\u0000${reframeGeneration}`;
+}
+
+export function advanceDegradedViewportTracking(previous: DegradedViewportTracking, filterKey: string, degraded: boolean, currentScroll: { left: number; top: number }): DegradedViewportDecision {
+  if (!degraded) return { shouldEvaluate: false, next: { processedKey: '', trackedScroll: null } };
+  if (previous.processedKey !== filterKey) return { shouldEvaluate: true, next: { processedKey: filterKey, trackedScroll: currentScroll } };
+  if (!previous.trackedScroll) return { shouldEvaluate: false, next: previous };
+  const unchanged = Math.abs(previous.trackedScroll.left - currentScroll.left) <= 1 && Math.abs(previous.trackedScroll.top - currentScroll.top) <= 1;
+  return unchanged
+    ? { shouldEvaluate: true, next: previous }
+    : { shouldEvaluate: false, next: { processedKey: filterKey, trackedScroll: null } };
 }
 
 export function scrollTargetForNode(viewport: MapViewport, position: MapPosition, zoom: number, padding = 24): { left: number; top: number } {

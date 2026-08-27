@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { AnalysisItem, AnalysisKind, AnalysisState } from '@/domain/analysis/contract.ts';
-import { canCommitMapEdit, degradedAutoPosition, latestRenderedMapItems, mapCanvasHeight, mapNodeHeight, mapNodeWidth, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, visibleSelectionId, type HumanItemPatch, type MapLayout } from '@/domain/mind-map/workspace.ts';
+import { advanceDegradedViewportTracking, canCommitMapEdit, degradedViewportFilterKey, latestRenderedMapItems, mapCanvasHeight, mapNodeHeight, mapNodeWidth, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, visibleSelectionId, type DegradedViewportTracking, type HumanItemPatch, type MapLayout } from '@/domain/mind-map/workspace.ts';
 
 const kindLabels: Record<AnalysisKind, string> = { topic: '論点', claim: '主張', question: '質問', decision: '決定', action: 'Action', dependency: '依存', risk: 'リスク' };
 const kindStyles: Record<AnalysisKind, string> = {
@@ -27,6 +27,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   const [kindFilter, setKindFilter] = useState<AnalysisKind | 'all'>('all');
   const [showTombstones, setShowTombstones] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [reframeGeneration, setReframeGeneration] = useState(0);
   const [editing, setEditing] = useState(false);
   const [editingItemId, setEditingItemId] = useState('');
   const [draftTitle, setDraftTitle] = useState('');
@@ -35,7 +36,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const lastFocusedNodeRef = useRef('');
-  const degradedAutoScrollKeyRef = useRef('');
+  const degradedViewportTrackingRef = useRef<DegradedViewportTracking>({ processedKey: '', trackedScroll: null });
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setLayout((current) => analysisState.revision === 0 && analysisState.items.length === 0 ? resetMapLayout() : reconcileMapLayout(current, analysisState)));
@@ -93,17 +94,19 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, visibleItems]);
 
-  const degradedFilterKey = `${query}\u0000${kindFilter}\u0000${showTombstones ? 'tombstones' : 'active'}`;
+  const degradedFilterKey = degradedViewportFilterKey(query, kindFilter, showTombstones, zoom, reframeGeneration);
   useEffect(() => {
-    const decision = degradedAutoPosition(degradedAutoScrollKeyRef.current, degradedFilterKey, degraded);
-    if (!degraded) { degradedAutoScrollKeyRef.current = decision.nextKey; return; }
-    if (!decision.shouldPosition) return;
     const frame = requestAnimationFrame(() => {
       const viewport = viewportRef.current;
       if (!viewport) return;
-      degradedAutoScrollKeyRef.current = decision.nextKey;
-      const target = scrollTargetForVisibleItems({ scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop, width: viewport.clientWidth, height: viewport.clientHeight }, visibleItems.map((item) => item.id), renderedLayout, zoom);
-      if (target && (target.left !== viewport.scrollLeft || target.top !== viewport.scrollTop)) viewport.scrollTo({ left: target.left, top: target.top, behavior: 'auto' });
+      const current = { left: viewport.scrollLeft, top: viewport.scrollTop };
+      const decision = advanceDegradedViewportTracking(degradedViewportTrackingRef.current, degradedFilterKey, degraded, current);
+      degradedViewportTrackingRef.current = decision.next;
+      if (!decision.shouldEvaluate) return;
+      const target = scrollTargetForVisibleItems({ scrollLeft: current.left, scrollTop: current.top, width: viewport.clientWidth, height: viewport.clientHeight }, visibleItems.map((item) => item.id), renderedLayout, zoom);
+      if (!target) return;
+      degradedViewportTrackingRef.current = { processedKey: degradedFilterKey, trackedScroll: target };
+      if (target.left !== current.left || target.top !== current.top) viewport.scrollTo({ left: target.left, top: target.top, behavior: 'auto' });
     });
     return () => cancelAnimationFrame(frame);
   }, [degraded, degradedFilterKey, renderedLayout, visibleItems, zoom]);
@@ -155,7 +158,7 @@ export function LiveMindMap({ analysisState, canUndo, canRedo, onUndo, onRedo, o
           <button disabled={!canUndo} onClick={onUndo} className="map-tool border bg-white disabled:opacity-40">元に戻す</button>
           <button disabled={!canRedo} onClick={onRedo} className="map-tool border bg-white disabled:opacity-40">やり直す</button>
           <button aria-label="縮小" onClick={() => setZoom((value) => Math.max(.55, value - .1))} className="map-tool border bg-white">−</button>
-          <button onClick={() => { setZoom(1); viewportRef.current?.scrollTo({ left: 0, top: 0, behavior: 'smooth' }); }} className="map-tool border bg-white">全体</button>
+          <button onClick={() => { setZoom(1); setReframeGeneration((value) => value + 1); }} className="map-tool border bg-white">全体</button>
           <button aria-label="拡大" onClick={() => setZoom((value) => Math.min(1.35, value + .1))} className="map-tool border bg-white">＋</button>
         </div>
         <div className="flex w-full flex-wrap gap-2">

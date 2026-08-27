@@ -3,9 +3,9 @@ import { test } from 'node:test';
 
 import { analyzeWithDeterministicMock } from '../adapters/analysis/mock-analyzer.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState } from '../domain/analysis/contract.ts';
-import { applyHumanItemPatch, canCommitMapEdit, commitAnalysisHistory, createAnalysisHistory, degradedAutoPosition, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
+import { advanceDegradedViewportTracking, applyHumanItemPatch, canCommitMapEdit, commitAnalysisHistory, createAnalysisHistory, degradedViewportFilterKey, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
 
-const utterances = Array.from({ length: 300 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
+const utterances = Array.from({ length: 400 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
 const kinds = ['topic', 'claim', 'question', 'decision', 'action', 'dependency', 'risk'];
 
 function stateWithNodes(count, revision = 0) {
@@ -134,11 +134,27 @@ test('degraded 300-node display scrolls to recent nodes only when none intersect
   assert.ok(positions.filter((position) => position.y < target.top + viewport.height && position.y + mapNodeHeight > target.top).length >= 2);
   const unchanged = scrollTargetForVisibleItems({ ...viewport, scrollLeft: target.left, scrollTop: target.top }, latest.map((item) => item.id), layout, 1);
   assert.deepEqual(unchanged, target);
-  const firstDecision = degradedAutoPosition('', 'all-active', true);
-  assert.deepEqual(firstDecision, { shouldPosition: true, nextKey: 'all-active' });
-  assert.deepEqual(degradedAutoPosition(firstDecision.nextKey, 'all-active', true), { shouldPosition: false, nextKey: 'all-active' });
-  assert.deepEqual(degradedAutoPosition(firstDecision.nextKey, 'question-active', true), { shouldPosition: true, nextKey: 'question-active' });
-  assert.deepEqual(degradedAutoPosition(firstDecision.nextKey, 'all-active', false), { shouldPosition: false, nextKey: '' });
+  const initialTracking = { processedKey: '', trackedScroll: null };
+  const firstDecision = advanceDegradedViewportTracking(initialTracking, 'all-active-1', true, { left: 0, top: 0 });
+  assert.equal(firstDecision.shouldEvaluate, true);
+  let tracking = { processedKey: firstDecision.next.processedKey, trackedScroll: target };
+  const unchangedDecision = advanceDegradedViewportTracking(tracking, 'all-active-1', true, target);
+  assert.equal(unchangedDecision.shouldEvaluate, true);
+  const expanded = stateWithNodes(320);
+  const expandedLayout = reconcileMapLayout(layout, expanded);
+  const expandedLatest = latestRenderedMapItems(expanded.items);
+  const followTarget = scrollTargetForVisibleItems({ ...viewport, scrollLeft: target.left, scrollTop: target.top }, expandedLatest.map((item) => item.id), expandedLayout, 1);
+  assert.ok(followTarget);
+  assert.ok(followTarget.top > target.top);
+  tracking = { processedKey: 'all-active-1', trackedScroll: followTarget };
+  assert.equal(advanceDegradedViewportTracking(tracking, 'all-active-1', true, followTarget).shouldEvaluate, true);
+  const manuallyMoved = advanceDegradedViewportTracking(tracking, 'all-active-1', true, { left: followTarget.left, top: followTarget.top + 300 });
+  assert.deepEqual(manuallyMoved, { shouldEvaluate: false, next: { processedKey: 'all-active-1', trackedScroll: null } });
+  assert.equal(advanceDegradedViewportTracking(manuallyMoved.next, 'all-active-1', true, followTarget).shouldEvaluate, false);
+  assert.equal(advanceDegradedViewportTracking(manuallyMoved.next, 'all-active-1.1', true, followTarget).shouldEvaluate, true);
+  assert.deepEqual(advanceDegradedViewportTracking(tracking, 'all-active-1', false, followTarget), { shouldEvaluate: false, next: { processedKey: '', trackedScroll: null } });
+  assert.notEqual(degradedViewportFilterKey('', 'all', false, 1, 0), degradedViewportFilterKey('', 'all', false, 1.1, 0));
+  assert.notEqual(degradedViewportFilterKey('', 'all', false, 1, 0), degradedViewportFilterKey('', 'all', false, 1, 1));
 });
 
 test('a loaded session starts from fresh layout slots after the session generation reset', () => {
