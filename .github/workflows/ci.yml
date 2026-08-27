@@ -113,3 +113,11 @@ jobs:
           path: native/privacy/build/Release/techmap-privacy.exe
           if-no-files-found: error
           retention-days: 7
+
+  launcher-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate one-command MVP launcher without capture or runtime dependencies
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/preflight-mvp.ps1 -ContractOnly

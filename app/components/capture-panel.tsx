@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExtern
 import { LocalOpenAiAnalyzer } from '@/adapters/analysis/local-openai-analyzer.ts';
 import { analyzeWithDeterministicMock } from '@/adapters/analysis/mock-analyzer.ts';
 import { isLoopbackRuntime, listMicrophones, startMicrophoneCapture, type MicrophoneCapture, type MicrophoneDevice } from '@/adapters/audio/browser-microphone.ts';
+import { LocalTeamsAudioClient, type TeamsAudioClientEvent, type TeamsAudioProbeReport } from '@/adapters/audio/local-teams-audio-client.ts';
 import { purgeLegacyPlaintextTranscripts } from '@/adapters/persistence/legacy-store-migration.ts';
 import { exportSessionToUserSelectedPath, LocalPrivacyClient, type StoredSession, type StoredSessionMetadata } from '@/adapters/privacy/local-privacy-client.ts';
 import { LocalCompanionTranscriptionClient } from '@/adapters/transcription/local-companion-client.ts';
@@ -11,6 +12,7 @@ import { LocalCaptionClient } from '@/adapters/transcription/local-caption-clien
 import type { CaptionRuntimeEvent } from '@/adapters/transcription/teams-caption-frames.ts';
 import { createSyntheticTranscription } from '@/adapters/transcription/synthetic-transcription.ts';
 import { createConsentRecord, type ConsentRecord } from '@/domain/privacy/consent.ts';
+import type { CaptureState } from '@/domain/audio/capture.ts';
 import { createMinimalUtteranceWindow } from '@/domain/privacy/redaction.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
 import { createRedactedAnalysisInput } from '@/domain/analysis/prompt.ts';
@@ -60,14 +62,18 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const [analysisMode, setAnalysisMode] = useState<'mock' | 'openai'>('mock');
   const [analysisStatus, setAnalysisStatus] = useState('local mockは確定発話ごとに自動更新します。');
   const [openAiInFlight, setOpenAiInFlight] = useState(0);
-  const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'teams-caption' | 'synthetic'>('none');
+  const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'teams-caption' | 'audio-fallback' | 'synthetic'>('none');
   const [captionSourceState, setCaptionSourceState] = useState<CaptionSourceState>('idle');
+  const [teamsAudioProbe, setTeamsAudioProbe] = useState<TeamsAudioProbeReport | null>(null);
+  const [teamsAudioProbeBusy, setTeamsAudioProbeBusy] = useState(false);
+  const [teamsAudioState, setTeamsAudioState] = useState<CaptureState>('stopped');
   const [meetingEnded, setMeetingEnded] = useState(false);
   const [privacyStatus, setPrivacyStatus] = useState<{ secureStore: boolean; credentialConfigured: boolean; location: string } | null>(null);
   const [storedSessions, setStoredSessions] = useState<StoredSessionMetadata[]>([]);
   const [message, setMessage] = useState('開始を押すまでマイクにも画面にもアクセスしません。');
   const microphone = useRef<MicrophoneCapture | null>(null);
   const localClient = useRef<LocalCompanionTranscriptionClient | null>(null);
+  const teamsAudioClient = useRef<LocalTeamsAudioClient | null>(null);
   const captionClient = useRef<LocalCaptionClient | null>(null);
   const captionAssemblerRef = useRef<CaptionAssemblerState>(emptyCaptionAssemblerState);
   const privacyClient = useRef<LocalPrivacyClient | null>(null);
@@ -95,6 +101,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const externalAnalysisAllowedRef = useRef(false);
   const demoModeRef = useRef(false);
   const inputStartGateRef = useRef(createInputStartGate());
+  const teamsAudioProbeGenerationRef = useRef(0);
 
   const publishAnalysisState = (state: AnalysisState, resetHistory = false) => {
     analysisStateRef.current = state;
@@ -105,7 +112,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setTranscript(state);
     onTranscriptChange?.(state);
   };
-  const hasActiveInput = () => Boolean(microphone.current || localClient.current || captionClient.current || synthetic.current);
+  const hasActiveInput = () => Boolean(microphone.current || localClient.current || teamsAudioClient.current || captionClient.current || synthetic.current);
   const runInputStart = async (label: string, action: (attempt: number) => Promise<void> | void): Promise<void> => {
     if (hasActiveInput()) { setMessage(`別の入力が動作中です。先に終了してから${label}を開始してください。`); return; }
     const attempt = beginInputStart(inputStartGateRef.current);
@@ -120,7 +127,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   useEffect(() => { analysisModeRef.current = analysisMode; }, [analysisMode]);
   useEffect(() => { void listMicrophones().then(setDevices).catch(() => setDevices([])); }, []);
   useEffect(() => { void purgeLegacyPlaintextTranscripts().catch(() => setMessage('旧版のplaintext保存を削除できません。ほかのTechMap tabを閉じて再読み込みしてください。')); }, []);
-  useEffect(() => () => { cancelInputStart(inputStartGateRef.current); if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); void captionClient.current?.stop(); }, []);
+  useEffect(() => () => { teamsAudioProbeGenerationRef.current += 1; cancelInputStart(inputStartGateRef.current); if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); void teamsAudioClient.current?.stop(); void captionClient.current?.stop(); }, []);
 
   const connectPrivacy = async () => {
     if (!localRuntime) throw new Error('privacy-requires-loopback');
@@ -449,6 +456,152 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     }
   });
 
+  const probeTeamsAudioFallback = async () => {
+    if (!localRuntime || !consentConfirmed) {
+      setMessage(!localRuntime ? 'Teams音声診断はWindowsローカルruntimeだけで実行できます。' : '全参加者の同意を確認してからTeams音声を診断してください。');
+      return;
+    }
+    if (inputStartGateRef.current.pendingAttempt !== null || inputStartGateRef.current.activeAttempt !== null || hasActiveInput()) {
+      setMessage('入力を終了してからTeams音声フォールバックを診断してください。');
+      return;
+    }
+    const generation = ++teamsAudioProbeGenerationRef.current;
+    setTeamsAudioProbeBusy(true);
+    setTeamsAudioProbe(null);
+    const client = new LocalTeamsAudioClient(() => undefined);
+    try {
+      const report = await client.probe();
+      if (generation !== teamsAudioProbeGenerationRef.current || !consentAllowedRef.current) return;
+      setTeamsAudioProbe(report);
+      if (report.supportedBuild && report.targetFound && report.activationSucceeded) {
+        setMessage(`Teams音声フォールバックを利用できます（対象process ${report.selectedProcessId}）。開始は別の操作です。`);
+      } else {
+        setMessage('Teams音声フォールバックは利用できません。Teamsの起動状態とWindows buildを確認し、字幕OCRを利用してください。');
+      }
+    } catch {
+      if (generation === teamsAudioProbeGenerationRef.current && consentAllowedRef.current) {
+        setMessage('Teams音声診断に失敗しました。字幕OCRは引き続き利用できます。音声へ自動切替はしません。');
+      }
+    } finally {
+      await client.stop().catch(() => undefined);
+      if (generation === teamsAudioProbeGenerationRef.current) setTeamsAudioProbeBusy(false);
+    }
+  };
+
+  const startTeamsAudioFallback = async () => runInputStart('Teams音声フォールバック', async (attempt) => {
+    const probe = teamsAudioProbe;
+    if (!localRuntime || !consentConfirmed || !probe || !probe.supportedBuild || !probe.targetFound || !probe.activationSucceeded || probe.selectedProcessId <= 0) {
+      setMessage(!consentConfirmed ? '全参加者の同意を確認してください。' : '先にTeams音声診断を実行し、利用可能な対象processを確認してください。');
+      return;
+    }
+    consentAllowedRef.current = true;
+    if (saveLocally) {
+      try {
+        const status = await (await connectPrivacy()).status();
+        if (!status.secureStore) throw new Error('privacy-store-unverified');
+        privacyStatusRef.current = status; setPrivacyStatus(status);
+      } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
+    }
+    if (!inputStartIsCurrent(inputStartGateRef.current, attempt) || !consentAllowedRef.current) { setMessage('同意確認が解除されたためcaptureを開始しませんでした。'); return; }
+    if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
+    analysisGenerationRef.current += 1;
+    demoModeRef.current = false;
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
+    consentRef.current = createConsentRecord();
+    sessionWriteBlockedRef.current = false;
+    persistenceMayExistRef.current = false;
+    persistedSessionRef.current = false;
+    sessionIdRef.current = crypto.randomUUID();
+    sessionCreatedAtRef.current = new Date().toISOString();
+    setMeetingEnded(false);
+    setTeamsAudioState('stopped');
+    dispatch({ type: 'start-requested' });
+    setMessage('明示的な音声フォールバックを開始します。マイク許可はこの操作に対してのみ要求します。');
+    let capture: MicrophoneCapture | null = null;
+    let selfClient: LocalCompanionTranscriptionClient | null = null;
+    let remoteClient: LocalTeamsAudioClient | null = null;
+    try {
+      let ready = false;
+      let selfFailed = false;
+      const createdSelf = new LocalCompanionTranscriptionClient('local', (event) => {
+        if (!ready || localClient.current !== createdSelf || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        receive(event);
+      });
+      selfClient = createdSelf;
+      createdSelf.onFailure = () => {
+        selfFailed = true;
+        if (localClient.current !== createdSelf || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        const ownedCapture = microphone.current;
+        const ownedRemote = teamsAudioClient.current;
+        microphone.current = null;
+        localClient.current = null;
+        teamsAudioClient.current = null;
+        setTeamsAudioState('stopped');
+        setInputMode('none');
+        dispatch({ type: 'engine-unavailable' });
+        setMessage('自分側のローカル音声認識が停止したため、音声フォールバック全体を停止しました。');
+        void Promise.allSettled([Promise.resolve(ownedCapture?.stop()), Promise.resolve(ownedRemote?.stop())])
+          .finally(() => releaseInputAttempt(inputStartGateRef.current, attempt));
+      };
+
+      capture = await startMicrophoneCapture(deviceId || undefined, (samples) => {
+        if (ready && localClient.current === createdSelf && inputAttemptOwnsSession(inputStartGateRef.current, attempt)) void createdSelf.sendPcm(samples).catch(() => undefined);
+      });
+      const microphoneAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, capture,
+        () => consentAllowedRef.current && !hasActiveInput(), (value) => { microphone.current = value; });
+      if (!microphoneAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      dispatch({ type: 'permission-granted' });
+
+      await createdSelf.start();
+      const selfAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdSelf,
+        () => !selfFailed && consentAllowedRef.current && microphone.current === capture && localClient.current === null && teamsAudioClient.current === null && captionClient.current === null && synthetic.current === null,
+        (value) => { localClient.current = value; });
+      if (!selfAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      if (selfFailed || localClient.current !== createdSelf || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('local-engine-failed-during-start');
+
+      const handleRemoteEvent = (event: TeamsAudioClientEvent) => {
+        if (teamsAudioClient.current !== createdRemote || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        if (event.type === 'utterance') receive(event.utterance);
+        else setTeamsAudioState(event.state);
+      };
+      const createdRemote = new LocalTeamsAudioClient(handleRemoteEvent);
+      remoteClient = createdRemote;
+      createdRemote.onFailure = () => {
+        if (teamsAudioClient.current !== createdRemote || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        teamsAudioClient.current = null;
+        setTeamsAudioState('degraded-microphone-only');
+        setMessage('Teams側音声が停止したため、明示的に再診断するまでマイクのみで継続します。話者名は推測しません。');
+      };
+      await createdRemote.start(probe.selectedProcessId);
+      const remoteAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdRemote,
+        () => consentAllowedRef.current && microphone.current === capture && localClient.current === createdSelf && teamsAudioClient.current === null && captionClient.current === null && synthetic.current === null,
+        (value) => { teamsAudioClient.current = value; });
+      if (!remoteAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      if (teamsAudioClient.current !== createdRemote || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('teams-audio-failed-during-start');
+      setInputMode('audio-fallback');
+      setTeamsAudioState('active');
+      ready = true;
+      createdRemote.listen();
+      dispatch({ type: 'started' });
+      setMessage('音声フォールバックを開始しました。生音声はmemory内だけで処理し、発話者名は推測しません。');
+      void listMicrophones().then(setDevices).catch(() => setDevices([]));
+    } catch (error) {
+      if (microphone.current === capture) microphone.current = null;
+      if (localClient.current === selfClient) localClient.current = null;
+      if (teamsAudioClient.current === remoteClient) teamsAudioClient.current = null;
+      await Promise.allSettled([Promise.resolve(capture?.stop()), Promise.resolve(selfClient?.stop()), Promise.resolve(remoteClient?.stop())]);
+      if (!inputAttemptControlsState(inputStartGateRef.current, attempt)) return;
+      releaseInputAttempt(inputStartGateRef.current, attempt);
+      setTeamsAudioState('stopped');
+      setInputMode('none');
+      if (error instanceof Error && (error.message === 'consent-revoked' || error.message === 'input-start-cancelled')) { dispatch({ type: 'stop' }); setMessage('入力開始が取り消されたためcaptureを開始しませんでした。'); return; }
+      const denied = error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+      dispatch({ type: denied ? 'permission-denied' : error instanceof DOMException ? 'device-unavailable' : 'engine-unavailable' });
+      setMessage(denied ? 'ブラウザー設定でマイクを許可するか、字幕OCRを利用してください。' : 'Teams音声helper・Whisper model・microphoneを確認してください。字幕OCRへ自動切替はしません。');
+    }
+  });
+
   const startDemo = async () => runInputStart('合成デモ', () => {
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
@@ -509,13 +662,15 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     synthetic.current?.stop(); synthetic.current = null;
     await microphone.current?.stop(); microphone.current = null;
     await localClient.current?.stop().catch(() => undefined); localClient.current = null;
+    await teamsAudioClient.current?.stop().catch(() => undefined); teamsAudioClient.current = null;
     await captionClient.current?.stop().catch(() => undefined); captionClient.current = null;
     transitionCaptionSession({ type: 'stop' });
+    setTeamsAudioState('stopped');
     setInputMode('none');
     await persistenceChain.current;
     dispatch({ type: 'stop' });
     setMeetingEnded(true);
-    const discarded = stoppedMode === 'teams-caption' ? 'OCR画像・TSV buffer' : '生音声buffer';
+    const discarded = stoppedMode === 'teams-caption' ? 'OCR画像・TSV buffer' : stoppedMode === 'audio-fallback' ? '自分側・Teams側の生音声buffer' : '生音声buffer';
     setMessage(saveLocallyRef.current ? `入力を終了し、${discarded}を破棄しました。暗号化sessionは保持期限まで残ります。` : `入力を終了し、${discarded}を破棄しました。未保存sessionはmemoryだけに残っています。`);
   };
   const deleteCurrent = async (): Promise<boolean> => {
@@ -555,6 +710,9 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setConsentConfirmed(confirmed);
     consentAllowedRef.current = confirmed;
     if (!confirmed) {
+      teamsAudioProbeGenerationRef.current += 1;
+      setTeamsAudioProbe(null);
+      setTeamsAudioProbeBusy(false);
       cancelInputStart(inputStartGateRef.current);
       if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
       externalAnalysisAllowedRef.current = false;
@@ -605,7 +763,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const active = sessionState === 'listening' || sessionState === 'paused';
   const startPending = sessionState === 'requesting-permission' || sessionState === 'starting-local-engine';
   const inputBusy = active || startPending;
-  const realCapture = inputMode === 'microphone' || inputMode === 'teams-caption';
+  const realCapture = inputMode === 'microphone' || inputMode === 'teams-caption' || inputMode === 'audio-fallback';
   const latest = transcript.utterances.slice(-2);
   const preview = createMinimalUtteranceWindow(transcript.utterances);
   let outboundPreview = '確定発話がないか、検証に失敗したため送信不能';
@@ -620,7 +778,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         <span className={`rounded-full px-3 py-1 font-bold ${realCapture ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {realCapture ? sessionState === 'paused' ? 'PAUSED' : 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
-        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
+        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'audio-fallback' ? `audio fallback (${teamsAudioState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
       </div>
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="min-w-0">
@@ -632,11 +790,18 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           <select id="microphone-device" value={deviceId} disabled={inputBusy} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs"><option value="">既定のマイク</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select>
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
-          {sessionState === 'listening' && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
-          {sessionState === 'paused' && <button onClick={() => void resume()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white">再開</button>}
+          {sessionState === 'listening' && inputMode !== 'audio-fallback' && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
+          {sessionState === 'paused' && inputMode !== 'audio-fallback' && <button onClick={() => void resume()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white">再開</button>}
           {inputBusy && <button onClick={() => void stop()} className="rounded-lg border border-[#c8a7a0] bg-white px-3 py-2 text-xs font-semibold text-[#8b3f34]">終了</button>}
           {!inputBusy && <button onClick={() => void startDemo()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}
         </div>
+      </div>
+      <div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs">
+        <b>推奨: Teams字幕OCR</b>
+        <span>Teams側の認識文と表示話者を利用します。音声フォールバックはOCRが使えない場合だけ、診断と開始を別々に明示操作してください。</span>
+        {!inputBusy && <button disabled={!localRuntime || !consentConfirmed || teamsAudioProbeBusy} onClick={() => void probeTeamsAudioFallback()} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">{teamsAudioProbeBusy ? 'Teams音声を診断中' : 'Teams音声を診断'}</button>}
+        {!inputBusy && teamsAudioProbe?.supportedBuild && teamsAudioProbe.targetFound && teamsAudioProbe.activationSucceeded && <button onClick={() => void startTeamsAudioFallback()} className="rounded border border-[#c8a7a0] px-2 py-1 font-semibold text-[#8b3f34]">診断済み音声フォールバックを開始</button>}
+        {teamsAudioProbe && <span>Windows build {teamsAudioProbe.windowsBuild} · Teams {teamsAudioProbe.targetFound ? '検出' : '未検出'} · 音声activation {teamsAudioProbe.activationSucceeded ? '成功' : '失敗'}</span>}
       </div>
       <div className="mx-auto mt-2 grid max-w-[1600px] gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs lg:grid-cols-[auto_1fr]">
         <div className="flex flex-wrap items-center gap-2">

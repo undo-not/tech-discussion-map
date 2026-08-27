@@ -10,11 +10,20 @@ type CaptionInstance = {
   failResume: () => void;
 };
 
+type TeamsAudioInstance = {
+  startCalls: number[];
+  listenCalls: number;
+  stopCalls: number;
+  fail: () => void;
+  emit: (event: unknown) => void;
+};
+
 const captionHarness = vi.hoisted(() => ({ instances: [] as CaptionInstance[] }));
 const microphoneHarness = vi.hoisted(() => ({
   captures: [] as Array<{ stopCalls: number }>,
   clients: [] as CaptionInstance[],
 }));
+const teamsAudioHarness = vi.hoisted(() => ({ instances: [] as TeamsAudioInstance[] }));
 
 vi.mock('@/adapters/audio/browser-microphone.ts', () => ({
   isLoopbackRuntime: () => true,
@@ -88,11 +97,39 @@ vi.mock('@/adapters/transcription/local-companion-client.ts', () => ({
   },
 }));
 
+vi.mock('@/adapters/audio/local-teams-audio-client.ts', () => ({
+  LocalTeamsAudioClient: class {
+    onFailure: (reason: string) => void = () => undefined;
+    readonly #record: TeamsAudioInstance;
+
+    constructor(onEvent: (event: unknown) => void) {
+      this.#record = {
+        startCalls: [], listenCalls: 0, stopCalls: 0,
+        fail: () => this.onFailure('synthetic-remote-failure'),
+        emit: (event) => onEvent(event),
+      };
+      teamsAudioHarness.instances.push(this.#record);
+    }
+
+    probe(): Promise<unknown> {
+      return Promise.resolve({
+        windowsBuild: 26100, minimumBuild: 20348, supportedBuild: true, teamsProcessCount: 1,
+        selectedProcessId: 4242, targetFound: true, activationAttempted: true,
+        activationSucceeded: true, activationHresult: '0x00000000',
+      });
+    }
+    start(processId: number): Promise<void> { this.#record.startCalls.push(processId); return Promise.resolve(); }
+    listen(): void { this.#record.listenCalls += 1; }
+    stop(): Promise<void> { this.#record.stopCalls += 1; return Promise.resolve(); }
+  },
+}));
+
 afterEach(() => {
   cleanup();
   captionHarness.instances.length = 0;
   microphoneHarness.captures.length = 0;
   microphoneHarness.clients.length = 0;
+  teamsAudioHarness.instances.length = 0;
 });
 
 describe('CapturePanel input ownership', () => {
@@ -233,5 +270,52 @@ describe('CapturePanel input ownership', () => {
     captionHarness.instances[0].resolveStart();
 
     await waitFor(() => expect(captionHarness.instances[0].stopCalls).toBeGreaterThan(0));
+  });
+
+  test('caption failure never activates the audio fallback automatically', async () => {
+    let analysisState: AnalysisState = emptyAnalysisState;
+    render(<CapturePanel analysisState={analysisState} getAnalysisState={() => analysisState} onAnalysisStateChange={(next) => { analysisState = next; }} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
+    captionHarness.instances[0].resolveStart();
+    await screen.findByRole('button', { name: '一時停止' });
+    captionHarness.instances[0].fail();
+    await screen.findByRole('button', { name: 'Teams音声を診断' });
+    expect(teamsAudioHarness.instances).toHaveLength(0);
+    expect(microphoneHarness.captures).toHaveLength(0);
+  });
+
+  test('audio fallback requires probe and second start, then degrades to microphone-only on remote failure', async () => {
+    let analysisState: AnalysisState = emptyAnalysisState;
+    render(<CapturePanel analysisState={analysisState} getAnalysisState={() => analysisState} onAnalysisStateChange={(next) => { analysisState = next; }} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Teams音声を診断' }));
+    const start = await screen.findByRole('button', { name: '診断済み音声フォールバックを開始' });
+    expect(microphoneHarness.captures).toHaveLength(0);
+    expect(teamsAudioHarness.instances[0].stopCalls).toBe(1);
+
+    fireEvent.click(start);
+    await waitFor(() => expect(microphoneHarness.clients).toHaveLength(1));
+    microphoneHarness.clients[0].resolveStart();
+    await screen.findByText(/入力: audio fallback \(active\)/);
+    expect(teamsAudioHarness.instances[1].startCalls).toEqual([4242]);
+    expect(teamsAudioHarness.instances[1].listenCalls).toBe(1);
+    expect(screen.queryByRole('button', { name: '一時停止' })).toBeNull();
+
+    teamsAudioHarness.instances[1].emit({
+      type: 'utterance',
+      utterance: { id: 'remote-000001', revision: 1, phase: 'final', source: 'remote', speaker: 'remote-group', startMs: 0, endMs: 1000, text: '合成された相手側発話' },
+    });
+    expect((await screen.findAllByText(/合成された相手側発話/)).length).toBeGreaterThan(0);
+    teamsAudioHarness.instances[1].fail();
+    await screen.findByText(/入力: audio fallback \(degraded-microphone-only\)/);
+    expect(microphoneHarness.captures[0].stopCalls).toBe(0);
+    expect(microphoneHarness.clients[0].stopCalls).toBe(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '終了' }));
+    await screen.findByText('CAPTURE OFF');
+    expect(microphoneHarness.captures[0].stopCalls).toBe(1);
+    expect(microphoneHarness.clients[0].stopCalls).toBe(1);
   });
 });

@@ -1,6 +1,6 @@
 # ADR-0008: Teams字幕OCRにhash固定したlocal Tesseractを使う
 
-- Status: Proposed（Issue #19の合成E2Eと対象PC capability確認後にAcceptedへ変更）
+- Status: Accepted（Issue #16、2026-08-28。実Teams字幕品質は対象PCで継続評価）
 - Source: Issue #19
 - Extends: ADR-0007
 

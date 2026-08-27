@@ -39,7 +39,7 @@ Before external analysis can be enabled, the operator confirms the selected API 
 | Threat | Control | Evidence |
 |---|---|---|
 | Capture before/revoked consent | consent record required before device open; revoke stops pending/active capture | UI state tests and manual synthetic test |
-| Browser, hostile site, or another local Windows user reaches local host | loopback bind, exact Host and Origin, ephemeral console-delivered launch secret, short-lived bearer, bounded requests | companion network test |
+| Browser, hostile site, or another local Windows user reaches local host | loopback bind, exact Host and Origin, URL/console非経由でUI server memoryからsame-origin POST取得するlaunch secret、idle 10分のsliding bearer、bounded requests | companion network test |
 | Another Windows user reads session files | protected current-user-only DACL + DPAPI CurrentUser | native Windows self-test |
 | Plaintext or raw audio reaches disk | typed session schema, forbidden-field scan, DPAPI-only writer, no audio store | privacy-store test and source scan |
 | OCR image, TSV, or raw display name leaves bounded native memory | selected-region-only worker, anonymous pipe protocol, native aliasing, exact-key event schema, buffer zeroing | native pure tests, source scan, caption companion test |

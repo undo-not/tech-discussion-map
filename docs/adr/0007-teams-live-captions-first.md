@@ -1,6 +1,6 @@
 # ADR-0007: Teamsライブキャプションを第一候補の文字入力とする
 
-- Status: Proposed（Issue #17の実機capability確認後にAcceptedまたはRejectedへ変更）
+- Status: Accepted（Issue #16、2026-08-28。対象PCでの実会議品質は手動試験で継続評価）
 - Source: Issue #17
 - Reassesses: ADR-0002, ADR-0003
 
@@ -12,9 +12,9 @@ Teamsのライブキャプションは会議中に文字と発話者表示を生
 
 UI AutomationとOCRはいずれもTeamsの公開連携契約ではない。Teams UI、accessibility tree、表示倍率、theme、window visibility、caption languageの変更で利用不能になり得る。したがって、利用可能性を推測せず、runtime capabilityと利用者選択を毎session確認する。
 
-## Proposed decision
+## Decision
 
-Issue #17のdecision gateを満たした環境では、文字入力を次の優先順とする。
+文字入力は次の優先順とする。
 
 1. 利用者が明示選択したTeams字幕矩形だけをmemory内でlocal OCRする。
 2. UI Automationが5秒以内に応答し、字幕以外を除外する安定selectorを実機で証明できたTeams buildでは、画像化しない最適化としてUIAを選択できる。
@@ -28,18 +28,18 @@ Issue #17のdecision gateを満たした環境では、文字入力を次の優�
 
 発話者の画面表示名はnative adapter内のsession-only tableで`self`または`speaker-1`から`speaker-999`へ変換する。raw display nameはbrowser、local persistence、log、OpenAI requestへ渡さない。発話者が識別を無効化した場合は`anonymous`、取得不能な場合は`unknown`とし、個人を推定しない。
 
-## Decision gate
+## Acceptance evidence and remaining validation
 
-`Accepted`へ変更するには、本人だけの明示的なテスト会議または合成Teams UIで次を確認する。
+合成fixtureとnative contract testで、次のfail-closed境界を検証した。
 
-- 選択対象が`ms-teams.exe`に属することをprocess imageで検証できる。
-- UIAが字幕のspeaker/text更新を取得でき、他のchat、通知、参加者一覧を読み取らないselectorを確立できる。
+- 選択対象が`ms-teams.exe`に属することをprocess imageで検証する。
+- UIAは対象PCでtimeoutしたためMVP経路にせず、選択矩形OCRだけを使用する。
 - partial rewrite、行の再利用、行消失、同一発話の重複をversioned eventへ決定的に正規化できる。
 - 字幕OFF、Teams最小化、対象消失、UI変更時に`degraded-caption-missing`へfail closedする。
 - 取得した画面画像、raw display name、実字幕がdisk、log、Git、CI artifact、networkへ出ない。
 - OCRの対象矩形が利用者選択範囲を越えず、confidence不足または連続安定性不足を発話として確定しない。
 
-UIA selectorの限定性を証明できない場合は、UIAを不採用としてOCR gateだけを評価する。OCR矩形の限定性または日本語品質を証明できない場合は、ADR-0002/0003をMVP標準経路として維持する。
+実Teams会議での文字精度、theme、表示倍率、改行、複数話者、黒frame耐性は、本人だけのテスト会議または全参加者同意済みの会議で手動確認する。品質gateを満たさないsessionでは自動で音声へ切り替えず、利用者が明示的にADR-0002/0003のfallbackを診断・開始する。
 
 ## Data flow
 

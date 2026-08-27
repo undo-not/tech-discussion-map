@@ -1,7 +1,7 @@
 import type { ConsentRecord } from '../../domain/privacy/consent.ts';
 import type { TranscriptUtterance } from '../../domain/transcription/utterance.ts';
 import type { AnalysisState } from '../../domain/analysis/contract.ts';
-import { consumeLocalLaunchSecret } from '../companion/launch-secret.ts';
+import { getLocalLaunchSecret } from '../companion/launch-secret.ts';
 
 const privacyCompanionOrigin = 'http://127.0.0.1:43117';
 const sessionIdPattern = /^[a-f0-9-]{36}$/;
@@ -33,13 +33,18 @@ async function readJson(response: Response): Promise<unknown> {
 
 export class LocalPrivacyClient {
   #token = '';
+  #connecting: Promise<void> | null = null;
 
   async connect(): Promise<void> {
-    const value = await readJson(await fetch(privacyUrl('/v1/bootstrap'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret: consumeLocalLaunchSecret() }), cache: 'no-store', credentials: 'omit',
-    })) as { token?: unknown };
-    if (typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new Error('privacy-invalid-bootstrap');
-    this.#token = value.token;
+    if (this.#token) return;
+    if (!this.#connecting) this.#connecting = (async () => {
+      const value = await readJson(await fetch(privacyUrl('/v1/bootstrap'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret: await getLocalLaunchSecret() }), cache: 'no-store', credentials: 'omit',
+      })) as { token?: unknown };
+      if (typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new Error('privacy-invalid-bootstrap');
+      this.#token = value.token;
+    })().finally(() => { this.#connecting = null; });
+    await this.#connecting;
   }
 
   async status(): Promise<{ secureStore: boolean; credentialConfigured: boolean; location: string }> {
@@ -76,9 +81,15 @@ export class LocalPrivacyClient {
     return value.deleted === true;
   }
 
-  #request(path: string, init: RequestInit): Promise<Response> {
+  async #request(path: string, init: RequestInit): Promise<Response> {
     if (!this.#token) return Promise.reject(new Error('privacy-client-not-connected'));
-    return fetch(privacyUrl(path), { ...init, credentials: 'omit', headers: { ...init.headers, Authorization: `Bearer ${this.#token}` } });
+    let response = await fetch(privacyUrl(path), { ...init, credentials: 'omit', headers: { ...init.headers, Authorization: `Bearer ${this.#token}` } });
+    if (response.status === 401) {
+      this.#token = '';
+      await this.connect();
+      response = await fetch(privacyUrl(path), { ...init, credentials: 'omit', headers: { ...init.headers, Authorization: `Bearer ${this.#token}` } });
+    }
+    return response;
   }
 }
 

@@ -225,5 +225,39 @@ test('companion binds as an authenticated loopback-only PCM bridge', async (cont
   const accepted = await fetch(`${base}/v1/sessions/${sessionId}/audio`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' }, body: Buffer.from([0, 0, 1, 0]) });
   assert.equal(accepted.status, 202);
   assert.equal(input.subarray(0, 4).toString(), 'TMI1');
+  worker.stdin.emit('error', new Error('synthetic-epipe'));
+  const companionStillAlive = await fetch(`${base}/v1/privacy/status`, { headers });
+  assert.equal(companionStillAlive.status, 503, 'companion remains reachable; this fixture intentionally has no privacy status runner');
 
+});
+
+test('active local bearer sessions slide their idle expiry and eventually fail closed', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'techmap-token-test-'));
+  const launchSecret = 'f'.repeat(64);
+  let clock = 0;
+  const privacyStore = {
+    status: async () => ({ secureStore: true, credentialConfigured: false, location: 'synthetic' }),
+  };
+  const server = createCompanionServer({
+    environment: { LOCALAPPDATA: root }, launchSecret, privacyStore,
+    now: () => clock, tokenLifetimeMs: 1_000,
+  });
+  await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  context.after(async () => {
+    await new Promise((resolveClose) => server.close(resolveClose));
+    await rm(root, { recursive: true, force: true });
+  });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const origin = 'http://127.0.0.1:3000';
+  const bootstrap = await fetch(`${base}/v1/bootstrap`, {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret }),
+  });
+  const { token } = await bootstrap.json();
+  const headers = { Origin: origin, Authorization: `Bearer ${token}` };
+  clock = 900;
+  assert.equal((await fetch(`${base}/v1/privacy/status`, { headers })).status, 200);
+  clock = 1_800;
+  assert.equal((await fetch(`${base}/v1/privacy/status`, { headers })).status, 200);
+  clock = 2_801;
+  assert.equal((await fetch(`${base}/v1/privacy/status`, { headers })).status, 401);
 });

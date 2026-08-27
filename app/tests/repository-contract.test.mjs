@@ -41,3 +41,17 @@ test('review hashes are checkout-independent on Windows', async () => {
   const attributes = await readFile(new URL('../../.gitattributes', import.meta.url), 'utf8');
   assert.match(attributes, /^\* text=auto eol=lf$/m);
 });
+
+test('every long-lived local client can renew an idle bearer without changing its session', async () => {
+  for (const relativePath of [
+    '../adapters/transcription/local-caption-client.ts',
+    '../adapters/transcription/local-companion-client.ts',
+    '../adapters/audio/local-teams-audio-client.ts',
+    '../adapters/privacy/local-privacy-client.ts',
+  ]) {
+    const source = await readFile(new URL(relativePath, import.meta.url), 'utf8');
+    assert.match(source, /getLocalLaunchSecret/);
+    assert.match(source, /response\.status === 401/);
+    assert.match(source, /this\.#token = ''/);
+  }
+});

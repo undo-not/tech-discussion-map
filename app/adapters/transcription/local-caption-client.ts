@@ -1,4 +1,4 @@
-import { consumeLocalLaunchSecret } from '../companion/launch-secret.ts';
+import { getLocalLaunchSecret } from '../companion/launch-secret.ts';
 import { parseCaptionRuntimeEvent, type CaptionRuntimeEvent } from './teams-caption-frames.ts';
 
 const captionCompanionOrigin = 'http://127.0.0.1:43117';
@@ -22,18 +22,15 @@ export class LocalCaptionClient {
   #closed = false;
   #paused = false;
   #controlPending = false;
+  #connecting: Promise<void> | null = null;
+  #controlRevision = 0;
 
   constructor(onEvent: (event: CaptionRuntimeEvent) => void) { this.#onEvent = onEvent; }
 
   onFailure: (reason: string) => void = () => undefined;
 
   async start(): Promise<void> {
-    const bootstrap = await readJson(await fetch(captionCompanionUrl('/v1/bootstrap'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ launchSecret: consumeLocalLaunchSecret() }), cache: 'no-store', credentials: 'omit',
-    })) as { token?: unknown };
-    if (typeof bootstrap.token !== 'string' || !/^[a-f0-9]{64}$/.test(bootstrap.token)) throw new Error('caption-engine-invalid-bootstrap');
-    this.#token = bootstrap.token;
+    await this.#connect();
     const started = await readJson(await this.#request('/v1/caption-sessions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ consentConfirmed: true }),
     })) as { sessionId?: unknown };
@@ -47,6 +44,7 @@ export class LocalCaptionClient {
     this.#controlPending = true;
     try {
       await this.#control('pause');
+      this.#controlRevision += 1;
       this.#paused = true;
     } finally {
       this.#controlPending = false;
@@ -58,6 +56,7 @@ export class LocalCaptionClient {
     this.#controlPending = true;
     try {
       await this.#control('resume');
+      this.#controlRevision += 1;
       this.#paused = false;
     } finally {
       this.#controlPending = false;
@@ -76,10 +75,24 @@ export class LocalCaptionClient {
     if (!response.ok) throw new Error(`caption-engine-${response.status}`);
   }
 
+  async #connect(): Promise<void> {
+    if (this.#token) return;
+    if (!this.#connecting) this.#connecting = (async () => {
+      const bootstrap = await readJson(await fetch(captionCompanionUrl('/v1/bootstrap'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launchSecret: await getLocalLaunchSecret() }), cache: 'no-store', credentials: 'omit',
+      })) as { token?: unknown };
+      if (typeof bootstrap.token !== 'string' || !/^[a-f0-9]{64}$/.test(bootstrap.token)) throw new Error('caption-engine-invalid-bootstrap');
+      this.#token = bootstrap.token;
+    })().finally(() => { this.#connecting = null; });
+    await this.#connecting;
+  }
+
   async #poll(): Promise<void> {
     while (!this.#closed) {
       if (this.#paused) { await new Promise((resolve) => setTimeout(resolve, 100)); continue; }
       try {
+        const controlRevision = this.#controlRevision;
         const value = await readJson(await this.#request(`/v1/caption-sessions/${this.#sessionId}/events?after=${this.#cursor}`, {
           method: 'GET', cache: 'no-store',
         })) as { cursor?: unknown; events?: unknown; stopped?: unknown; paused?: unknown };
@@ -92,7 +105,7 @@ export class LocalCaptionClient {
           this.#onEvent(parseCaptionRuntimeEvent(event));
         }
         this.#cursor = value.cursor as number;
-        this.#paused = value.paused;
+        if (controlRevision === this.#controlRevision) this.#paused = value.paused;
         if (value.stopped && !this.#closed) this.#fail('caption-engine-stopped');
       } catch (error) {
         this.#fail(error instanceof Error ? error.message : 'caption-engine-failed');
@@ -100,8 +113,14 @@ export class LocalCaptionClient {
     }
   }
 
-  #request(path: string, init: RequestInit): Promise<Response> {
-    return fetch(captionCompanionUrl(path), { ...init, credentials: 'omit', headers: { ...init.headers, Authorization: `Bearer ${this.#token}` } });
+  async #request(path: string, init: RequestInit): Promise<Response> {
+    let response = await fetch(captionCompanionUrl(path), { ...init, credentials: 'omit', headers: { ...init.headers, Authorization: `Bearer ${this.#token}` } });
+    if (response.status === 401) {
+      this.#token = '';
+      await this.#connect();
+      response = await fetch(captionCompanionUrl(path), { ...init, credentials: 'omit', headers: { ...init.headers, Authorization: `Bearer ${this.#token}` } });
+    }
+    return response;
   }
 
   #fail(reason: string): void {
