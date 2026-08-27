@@ -7,12 +7,15 @@ import { isLoopbackRuntime, listMicrophones, startMicrophoneCapture, type Microp
 import { purgeLegacyPlaintextTranscripts } from '@/adapters/persistence/legacy-store-migration.ts';
 import { exportSessionToUserSelectedPath, LocalPrivacyClient, type StoredSession, type StoredSessionMetadata } from '@/adapters/privacy/local-privacy-client.ts';
 import { LocalCompanionTranscriptionClient } from '@/adapters/transcription/local-companion-client.ts';
+import { LocalCaptionClient } from '@/adapters/transcription/local-caption-client.ts';
+import type { CaptionRuntimeEvent } from '@/adapters/transcription/teams-caption-frames.ts';
 import { createSyntheticTranscription } from '@/adapters/transcription/synthetic-transcription.ts';
 import { createConsentRecord, type ConsentRecord } from '@/domain/privacy/consent.ts';
 import { createMinimalUtteranceWindow } from '@/domain/privacy/redaction.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
 import { createRedactedAnalysisInput } from '@/domain/analysis/prompt.ts';
 import { transitionTranscriptionSession, type TranscriptionSessionEvent, type TranscriptionSessionState } from '@/domain/transcription/session.ts';
+import { applyCaptionSourceEvent, emptyCaptionAssemblerState, transitionCaptionSource, type CaptionAssemblerState, type CaptionSourceSessionEvent, type CaptionSourceState } from '@/domain/transcription/caption-source.ts';
 import { applyTranscriptEvent, emptyTranscriptState, type TranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
 
 const stateLabels: Record<TranscriptionSessionState, string> = {
@@ -40,13 +43,16 @@ export function CapturePanel() {
   const [analysisState, setAnalysisState] = useState<AnalysisState>(emptyAnalysisState);
   const [analysisStatus, setAnalysisStatus] = useState('local mockは確定発話ごとに自動更新します。');
   const [openAiInFlight, setOpenAiInFlight] = useState(0);
-  const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'synthetic'>('none');
+  const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'teams-caption' | 'synthetic'>('none');
+  const [captionSourceState, setCaptionSourceState] = useState<CaptionSourceState>('idle');
   const [meetingEnded, setMeetingEnded] = useState(false);
   const [privacyStatus, setPrivacyStatus] = useState<{ secureStore: boolean; credentialConfigured: boolean; location: string } | null>(null);
   const [storedSessions, setStoredSessions] = useState<StoredSessionMetadata[]>([]);
-  const [message, setMessage] = useState('開始を押すまでマイクへアクセスしません。');
+  const [message, setMessage] = useState('開始を押すまでマイクにも画面にもアクセスしません。');
   const microphone = useRef<MicrophoneCapture | null>(null);
   const localClient = useRef<LocalCompanionTranscriptionClient | null>(null);
+  const captionClient = useRef<LocalCaptionClient | null>(null);
+  const captionAssemblerRef = useRef<CaptionAssemblerState>(emptyCaptionAssemblerState);
   const privacyClient = useRef<LocalPrivacyClient | null>(null);
   const openAiAnalyzer = useRef<LocalOpenAiAnalyzer | null>(null);
   const synthetic = useRef<SyntheticSession | null>(null);
@@ -78,7 +84,7 @@ export function CapturePanel() {
   useEffect(() => { analysisModeRef.current = analysisMode; }, [analysisMode]);
   useEffect(() => { void listMicrophones().then(setDevices).catch(() => setDevices([])); }, []);
   useEffect(() => { void purgeLegacyPlaintextTranscripts().catch(() => setMessage('旧版のplaintext保存を削除できません。ほかのTechMap tabを閉じて再読み込みしてください。')); }, []);
-  useEffect(() => () => { if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); }, []);
+  useEffect(() => () => { if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); void captionClient.current?.stop(); }, []);
 
   const connectPrivacy = async () => {
     if (!localRuntime) throw new Error('privacy-requires-loopback');
@@ -189,6 +195,96 @@ export function CapturePanel() {
     }
   };
 
+  const transitionCaptionSession = (event: CaptionSourceSessionEvent) => {
+    const sourceState = transitionCaptionSource(captionAssemblerRef.current.sourceState, event);
+    captionAssemblerRef.current = { ...captionAssemblerRef.current, sourceState };
+    setCaptionSourceState(sourceState);
+    return sourceState;
+  };
+
+  const handleCaptionRuntimeEvent = (event: CaptionRuntimeEvent) => {
+    if (event.type === 'state') {
+      if (event.state === 'selecting-target') setMessage('Teams字幕の本文と発話者を含む範囲だけをドラッグ選択してください。右クリック／Escで中止できます。');
+      else if (event.state === 'active-ocr') {
+        transitionCaptionSession({ type: 'ocr-connected' });
+        setMessage('選択したTeams字幕矩形だけをmemory内でOCRしています。画像と実名は保存・送信しません。');
+      } else if (event.state === 'degraded-low-confidence') {
+        transitionCaptionSession({ type: 'low-confidence' });
+        setMessage('OCR confidenceが不足したため発話を生成せず停止しました。字幕表示を確認して再選択してください。');
+      } else if (event.state === 'degraded-caption-missing') {
+        transitionCaptionSession({ type: 'caption-missing' });
+        setMessage(`字幕captureを安全に継続できないため停止しました（${event.reason}）。Teamsを前面表示して再選択してください。`);
+      } else transitionCaptionSession({ type: 'stop' });
+      return;
+    }
+    try {
+      const assembled = applyCaptionSourceEvent(captionAssemblerRef.current, event);
+      captionAssemblerRef.current = assembled.state;
+      setCaptionSourceState(assembled.state.sourceState);
+      if (assembled.signal === 'low-confidence') transitionCaptionSession({ type: 'low-confidence' });
+      for (const utterance of assembled.utterances) receive(utterance);
+    } catch {
+      transitionCaptionSession({ type: 'caption-missing' });
+      void captionClient.current?.stop().catch(() => undefined);
+      setMessage('字幕eventが安全contractに違反したためcaptureを停止しました。');
+    }
+  };
+
+  const startCaptionOcr = async () => {
+    if (!localRuntime || !consentConfirmed) {
+      setMessage(!localRuntime ? '公開UIではTeams画面を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
+      return;
+    }
+    if (saveLocally) {
+      try {
+        const status = await (await connectPrivacy()).status();
+        if (!status.secureStore) throw new Error('privacy-store-unverified');
+        privacyStatusRef.current = status; setPrivacyStatus(status);
+      } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
+    }
+    if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
+    analysisGenerationRef.current += 1;
+    demoModeRef.current = false;
+    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
+    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
+    consentRef.current = createConsentRecord();
+    consentAllowedRef.current = true;
+    sessionWriteBlockedRef.current = false;
+    persistenceMayExistRef.current = false;
+    persistedSessionRef.current = false;
+    sessionIdRef.current = crypto.randomUUID();
+    sessionCreatedAtRef.current = new Date().toISOString();
+    setMeetingEnded(false);
+    let sourceState = transitionCaptionSource('idle', { type: 'prepare' });
+    sourceState = transitionCaptionSource(sourceState, { type: 'consent-confirmed' });
+    captionAssemblerRef.current = { sourceState, rows: [] };
+    setCaptionSourceState(sourceState);
+    dispatch({ type: 'start-requested' });
+    dispatch({ type: 'permission-granted' });
+    setMessage('同意確認済み。Teamsを前面表示すると字幕領域の選択overlayを開きます。');
+    try {
+      const client = new LocalCaptionClient(handleCaptionRuntimeEvent);
+      client.onFailure = () => {
+        const state = captionAssemblerRef.current.sourceState;
+        captionClient.current = null;
+        setInputMode('none');
+        dispatch({ type: 'engine-unavailable' });
+        if (!state.startsWith('degraded-')) setMessage('字幕OCR workerが停止しました。画像bufferは破棄済みです。');
+      };
+      await client.start();
+      if (!consentAllowedRef.current) { await client.stop().catch(() => undefined); throw new Error('consent-revoked'); }
+      captionClient.current = client;
+      setInputMode('teams-caption');
+      dispatch({ type: 'started' });
+    } catch (error) {
+      captionClient.current = null; setInputMode('none');
+      transitionCaptionSession({ type: 'stop' });
+      if (error instanceof Error && error.message === 'consent-revoked') { dispatch({ type: 'stop' }); setMessage('同意確認が解除されたためcaptureを開始しませんでした。'); return; }
+      dispatch({ type: 'engine-unavailable' });
+      setMessage('caption helperまたは固定hash検証済みTesseract 5.5.3を確認してください。画面は取得していません。');
+    }
+  };
+
   const startLocal = async () => {
     if (!localRuntime || !consentConfirmed) {
       setMessage(!localRuntime ? '公開UIでは実音声を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
@@ -271,18 +367,46 @@ export function CapturePanel() {
     dispatch({ type: 'demo-started' });
     setMessage('合成データだけを再生中です。マイク・外部送信・永続保存は使用しません。');
   };
-  const pause = async () => { microphone.current?.pause(); synthetic.current?.pause(); await localClient.current?.pause().catch(() => undefined); dispatch({ type: 'pause' }); };
-  const resume = async () => { microphone.current?.resume(); synthetic.current?.resume(); await localClient.current?.resume().catch(() => undefined); dispatch({ type: 'resume' }); };
+  const pause = async () => {
+    microphone.current?.pause(); synthetic.current?.pause();
+    await localClient.current?.pause().catch(() => undefined);
+    if (captionClient.current) {
+      await captionClient.current.pause().catch(() => undefined);
+      transitionCaptionSession({ type: 'stop' });
+      captionAssemblerRef.current = { sourceState: 'stopped', rows: [] };
+      setCaptionSourceState('stopped');
+      setMessage('字幕OCRを停止しました。再開時は安全のため字幕矩形を再選択します。');
+    }
+    dispatch({ type: 'pause' });
+  };
+  const resume = async () => {
+    microphone.current?.resume(); synthetic.current?.resume(); await localClient.current?.resume().catch(() => undefined);
+    if (captionClient.current) {
+      let sourceState = transitionCaptionSource('stopped', { type: 'prepare' });
+      sourceState = transitionCaptionSource(sourceState, { type: 'consent-confirmed' });
+      captionAssemblerRef.current = { sourceState, rows: [] };
+      setCaptionSourceState(sourceState);
+      await captionClient.current.resume().catch(() => {
+        dispatch({ type: 'engine-unavailable' });
+        setMessage('字幕OCRを再開できませんでした。新しいsessionとして開始してください。');
+      });
+    }
+    dispatch({ type: 'resume' });
+  };
   const stop = async () => {
+    const stoppedMode = inputMode;
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     synthetic.current?.stop(); synthetic.current = null;
     await microphone.current?.stop(); microphone.current = null;
     await localClient.current?.stop().catch(() => undefined); localClient.current = null;
+    await captionClient.current?.stop().catch(() => undefined); captionClient.current = null;
+    transitionCaptionSession({ type: 'stop' });
     setInputMode('none');
     await persistenceChain.current;
     dispatch({ type: 'stop' });
     setMeetingEnded(true);
-    setMessage(saveLocallyRef.current ? '入力を終了し、生音声bufferを破棄しました。暗号化sessionは保持期限まで残ります。' : '入力を終了し、生音声bufferを破棄しました。未保存sessionはmemoryだけに残っています。');
+    const discarded = stoppedMode === 'teams-caption' ? 'OCR画像・TSV buffer' : '生音声buffer';
+    setMessage(saveLocallyRef.current ? `入力を終了し、${discarded}を破棄しました。暗号化sessionは保持期限まで残ります。` : `入力を終了し、${discarded}を破棄しました。未保存sessionはmemoryだけに残っています。`);
   };
   const deleteCurrent = async (): Promise<boolean> => {
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
@@ -290,7 +414,7 @@ export function CapturePanel() {
     sessionWriteBlockedRef.current = true;
     saveLocallyRef.current = false;
     setSaveLocally(false);
-    if (microphone.current || localClient.current || synthetic.current) await stop();
+    if (microphone.current || localClient.current || captionClient.current || synthetic.current) await stop();
     await persistenceChain.current;
     const id = sessionIdRef.current;
     const localDeleteRequired = persistedSessionRef.current || persistenceMayExistRef.current;
@@ -368,6 +492,7 @@ export function CapturePanel() {
   };
 
   const active = sessionState === 'listening' || sessionState === 'paused';
+  const realCapture = inputMode === 'microphone' || inputMode === 'teams-caption';
   const latest = transcript.utterances.slice(-2);
   const preview = createMinimalUtteranceWindow(transcript.utterances);
   let outboundPreview = '確定発話がないか、検証に失敗したため送信不能';
@@ -377,21 +502,22 @@ export function CapturePanel() {
   }
 
   return (
-    <section aria-label="音声入力" className="border-b border-[#d9ded8] bg-[#eef3ef] px-4 py-3 md:px-6">
+    <section aria-label="会議入力" className="border-b border-[#d9ded8] bg-[#eef3ef] px-4 py-3 md:px-6">
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-2 pb-2 text-xs">
-        <span className={`rounded-full px-3 py-1 font-bold ${inputMode === 'microphone' ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {inputMode === 'microphone' ? 'ON' : 'OFF'}</span>
+        <span className={`rounded-full px-3 py-1 font-bold ${realCapture ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {realCapture ? sessionState === 'paused' ? 'PAUSED' : 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
-        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
+        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
       </div>
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${active ? 'animate-pulse bg-[#c55445]' : 'bg-[#8a9893]'}`} /><strong className="text-sm">{stateLabels[sessionState]}</strong><span className="text-xs text-[#52615c]">{message}</span></div>
-          {latest.length > 0 && <div aria-live="polite" className="mt-2 space-y-1 text-xs text-[#34423e]">{latest.map((item) => <p key={item.id}><b>{item.phase === 'final' ? '確定' : '認識中'} · {item.speaker === 'self' ? '自分' : item.source === 'synthetic' ? '合成' : '相手側'}:</b> {item.text}</p>)}</div>}
+          {latest.length > 0 && <div aria-live="polite" className="mt-2 space-y-1 text-xs text-[#34423e]">{latest.map((item) => <p key={item.id}><b>{item.phase === 'final' ? '確定' : '認識中'} · {item.speakerAlias ?? (item.speaker === 'self' ? '自分' : item.source === 'synthetic' ? '合成' : item.speaker === 'anonymous' ? '匿名話者' : '相手側')}:</b> {item.text}</p>)}</div>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <label className="sr-only" htmlFor="microphone-device">入力マイク</label>
           <select id="microphone-device" value={deviceId} disabled={active} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs"><option value="">既定のマイク</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select>
+          {!active && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
           {!active && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
           {sessionState === 'listening' && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
           {sessionState === 'paused' && <button onClick={() => void resume()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white">再開</button>}
@@ -417,7 +543,7 @@ export function CapturePanel() {
             <label className="flex items-start gap-2 font-semibold text-[#8b3f34]"><input type="checkbox" checked={consentConfirmed} onChange={(event) => revokeConsent(event.target.checked)} />Teams側の表示だけに依存せず、全参加者がこのアプリの文字起こし・分析に同意したことを確認しました</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={saveLocally} disabled={!consentConfirmed || active} onChange={(event) => setSaveLocally(event.target.checked)} />確定文字起こし・分析・session状態を暗号化してローカル保存</label>
             <label>保持期間 <select value={retentionDays} disabled={!saveLocally || active} onChange={(event) => setRetentionDays(Number(event.target.value) as RetentionDays)} className="ml-2 rounded border px-2 py-1">{retentionOptions.map((days) => <option value={days} key={days}>{days}日</option>)}</select></label>
-            <p>保存先: %LOCALAPPDATA%\TechMapLive\sessions（current-user-only ACL + DPAPI）。生音声は保存対象外です。</p>
+            <p>保存先: %LOCALAPPDATA%\TechMapLive\sessions（current-user-only ACL + DPAPI）。生音声、OCR画像、TSV、raw表示名は保存対象外です。</p>
             <button onClick={() => void refreshPrivacyStatus()} className="rounded border px-2 py-1 font-semibold">ローカル保護・API key状態を確認</button>
             <span>{privacyStatus ? `ACL/DPAPI: 有効 · Credential Manager key: ${privacyStatus.credentialConfigured ? '設定済み' : '未設定'}` : '未確認'}</span>
           </div>

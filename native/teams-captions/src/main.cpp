@@ -4,13 +4,19 @@
 #include <uiautomation.h>
 #include <wrl/client.h>
 
+#include "ocr_runtime.h"
+
 #include <algorithm>
+#include <fcntl.h>
 #include <cstdio>
 #include <cwchar>
+#include <io.h>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -90,7 +96,7 @@ BOOL CALLBACK CollectTeamsWindows(HWND window, LPARAM parameter) {
 
 int RunContract() {
     return WriteText(
-        "{\"contractVersion\":1,\"commands\":[\"probe\",\"probe-at-cursor\"],"
+        "{\"contractVersion\":1,\"commands\":[\"probe\",\"probe-at-cursor\",\"ocr-status\",\"ocr-capture\"],"
         "\"contentEmitted\":false,\"contentPersisted\":false}\n") ? 0 : 3;
 }
 
@@ -229,13 +235,55 @@ void PrintUsage() {
         "Usage:\n"
         "  techmap-captions contract\n"
         "  techmap-captions probe\n"
-        "  techmap-captions probe-at-cursor --consent-confirmed\n");
+        "  techmap-captions probe-at-cursor --consent-confirmed\n"
+        "  techmap-captions ocr-status\n"
+        "  techmap-captions ocr-capture --consent-confirmed --session-proof <companion-generated>\n");
+}
+
+std::optional<std::string> ParseSessionProof(const wchar_t* value) {
+    if (!value || wcslen(value) != 64) return std::nullopt;
+    std::string proof;
+    proof.reserve(64);
+    for (std::size_t index = 0; index < 64; ++index) {
+        const wchar_t character = value[index];
+        if (!((character >= L'0' && character <= L'9') || (character >= L'a' && character <= L'f'))) return std::nullopt;
+        proof.push_back(static_cast<char>(character));
+    }
+    return proof;
 }
 
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+    if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return 3;
+    if (_setmode(_fileno(stdout), _O_BINARY) == -1) return 3;
     if (argc == 2 && wcscmp(argv[1], L"contract") == 0) return RunContract();
+    if (argc == 2 && wcscmp(argv[1], L"ocr-status") == 0) return techmap::captions::RunOcrStatus();
+    if (argc >= 2 && wcscmp(argv[1], L"ocr-capture") == 0) {
+        const bool consentConfirmed = argc == 5 && wcscmp(argv[2], L"--consent-confirmed") == 0 && wcscmp(argv[3], L"--session-proof") == 0;
+        const auto sessionProof = consentConfirmed ? ParseSessionProof(argv[4]) : std::nullopt;
+        if (!sessionProof) return EmitSimpleState("consent-required") == 0 ? 2 : 3;
+        return techmap::captions::RunOcrCapture(std::move(*sessionProof));
+    }
+    if (argc == 8 && wcscmp(argv[1], L"capture-frame-worker") == 0) {
+        wchar_t* end = nullptr;
+        const auto window = static_cast<std::uintptr_t>(_wcstoui64(argv[2], &end, 10));
+        if (!end || *end != L'\0' || window == 0) return 1;
+        auto parseCoordinate = [](const wchar_t* value, std::int32_t& output) {
+            wchar_t* parsedEnd = nullptr;
+            const long long parsed = _wcstoi64(value, &parsedEnd, 10);
+            if (!parsedEnd || *parsedEnd != L'\0' || parsed < INT32_MIN || parsed > INT32_MAX) return false;
+            output = static_cast<std::int32_t>(parsed);
+            return true;
+        };
+        techmap::captions::PixelRect selection{};
+        if (!parseCoordinate(argv[3], selection.left) || !parseCoordinate(argv[4], selection.top) ||
+            !parseCoordinate(argv[5], selection.right) || !parseCoordinate(argv[6], selection.bottom)) return 1;
+        wchar_t* dpiEnd = nullptr;
+        const unsigned long dpi = wcstoul(argv[7], &dpiEnd, 10);
+        if (!dpiEnd || *dpiEnd != L'\0' || dpi == 0 || dpi > UINT32_MAX) return 1;
+        return techmap::captions::RunCaptureFrameWorker(window, selection, static_cast<std::uint32_t>(dpi));
+    }
 
     if (argc == 2 && wcscmp(argv[1], L"probe") == 0) return RunBoundedWorker(L"probe-worker", false);
     if (argc >= 2 && wcscmp(argv[1], L"probe-at-cursor") == 0) {

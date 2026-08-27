@@ -195,7 +195,7 @@ export function transitionCaptionSource(current: CaptionSourceState, event: Capt
     case 'ocr-connected':
       return current === 'selecting-target' || current === 'degraded-caption-missing' ? 'active-ocr' : current;
     case 'caption-missing':
-      return current === 'active-uia' || current === 'active-ocr' ? 'degraded-caption-missing' : current;
+      return current === 'selecting-target' || current === 'active-uia' || current === 'active-ocr' ? 'degraded-caption-missing' : current;
     case 'low-confidence':
       return current === 'active-ocr' ? 'degraded-low-confidence' : current;
     case 'quality-recovered':

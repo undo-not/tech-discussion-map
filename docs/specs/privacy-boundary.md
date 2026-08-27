@@ -40,6 +40,7 @@ Before external analysis can be enabled, the operator confirms the selected API 
 | Browser, hostile site, or another local Windows user reaches local host | loopback bind, exact Host and Origin, ephemeral console-delivered launch secret, short-lived bearer, bounded requests | companion network test |
 | Another Windows user reads session files | protected current-user-only DACL + DPAPI CurrentUser | native Windows self-test |
 | Plaintext or raw audio reaches disk | typed session schema, forbidden-field scan, DPAPI-only writer, no audio store | privacy-store test and source scan |
+| OCR image, TSV, or raw display name leaves bounded native memory | selected-region-only worker, anonymous pipe protocol, native aliasing, exact-key event schema, buffer zeroing | native pure tests, source scan, caption companion test |
 | Secret reaches OpenAI or logs | deterministic redaction, residual-secret verifier, no request/content log | redaction tests |
 | OpenAI retains application state | `store:false`, no conversations/background/files/tools | exact-key request test |
 | Unapproved runtime egress | exact OpenAI URL factory; all other remote runtime services absent | repository/network policy test |

@@ -146,4 +146,5 @@ test('caption capture cannot activate before consent and explicit target selecti
   assert.equal(state, 'degraded-caption-missing');
   assert.equal(transitionCaptionSource(state, { type: 'ocr-connected' }), 'active-ocr');
   assert.equal(transitionCaptionSource('idle', { type: 'ocr-connected' }), 'idle');
+  assert.equal(transitionCaptionSource('selecting-target', { type: 'caption-missing' }), 'degraded-caption-missing');
 });
