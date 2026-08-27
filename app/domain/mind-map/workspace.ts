@@ -6,6 +6,7 @@ export type MapLayout = { positions: Record<string, MapPosition> };
 export type MapViewport = { scrollLeft: number; scrollTop: number; width: number; height: number };
 export type AnalysisHistory = { past: AnalysisState[]; present: AnalysisState; future: AnalysisState[] };
 export type HumanItemPatch = { title?: string; detail?: string; status?: AnalysisItem['status']; confirm?: boolean };
+export type DegradedAutoPosition = { shouldPosition: boolean; nextKey: string };
 
 export const maximumHistoryEntries = 50;
 export const maximumRenderedNodes = 100;
@@ -125,6 +126,15 @@ export function visibleSelectionId(selectedId: string, visibleIds: string[]): st
   return visibleIds.includes(selectedId) ? selectedId : visibleIds[0] ?? '';
 }
 
+export function canCommitMapEdit(editingItemId: string, selectedItemId: string): boolean {
+  return editingItemId !== '' && editingItemId === selectedItemId;
+}
+
+export function degradedAutoPosition(previousKey: string, filterKey: string, degraded: boolean): DegradedAutoPosition {
+  if (!degraded) return { shouldPosition: false, nextKey: '' };
+  return { shouldPosition: previousKey !== filterKey, nextKey: filterKey };
+}
+
 export function scrollTargetForNode(viewport: MapViewport, position: MapPosition, zoom: number, padding = 24): { left: number; top: number } {
   const nodeLeft = position.x * zoom;
   const nodeTop = position.y * zoom;
@@ -151,5 +161,5 @@ export function scrollTargetForVisibleItems(viewport: MapViewport, itemIds: stri
   });
   if (intersects) return { left: viewport.scrollLeft, top: viewport.scrollTop };
   const first = [...positions].sort((left, right) => left.y - right.y || left.x - right.x)[0];
-  return scrollTargetForNode(viewport, first, zoom);
+  return { left: Math.max(0, Math.round(first.x * zoom - 24)), top: Math.max(0, Math.round(first.y * zoom - 24)) };
 }

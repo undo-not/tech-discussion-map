@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { analyzeWithDeterministicMock } from '../adapters/analysis/mock-analyzer.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState } from '../domain/analysis/contract.ts';
-import { applyHumanItemPatch, commitAnalysisHistory, createAnalysisHistory, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
+import { applyHumanItemPatch, canCommitMapEdit, commitAnalysisHistory, createAnalysisHistory, degradedAutoPosition, latestRenderedMapItems, mapNodeHeight, maximumHistoryEntries, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, redoAnalysisHistory, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, undoAnalysisHistory, visibleSelectionId } from '../domain/mind-map/workspace.ts';
 
 const utterances = Array.from({ length: 300 }, (_, index) => ({ id: `map-u${index}`, revision: 1, phase: 'final', source: 'synthetic', speaker: 'unknown', startMs: index, endMs: index + 1, text: `合成発話 ${index}` }));
 const kinds = ['topic', 'claim', 'question', 'decision', 'action', 'dependency', 'risk'];
@@ -130,9 +130,15 @@ test('degraded 300-node display scrolls to recent nodes only when none intersect
   assert.ok(target);
   assert.ok(target.top > 0);
   const positions = latest.map((item) => layout.positions[item.id]);
-  assert.ok(positions.some((position) => position.y < target.top + viewport.height && position.y + mapNodeHeight > target.top));
+  assert.equal(target.top, Math.min(...positions.map((position) => position.y)) - 24);
+  assert.ok(positions.filter((position) => position.y < target.top + viewport.height && position.y + mapNodeHeight > target.top).length >= 2);
   const unchanged = scrollTargetForVisibleItems({ ...viewport, scrollLeft: target.left, scrollTop: target.top }, latest.map((item) => item.id), layout, 1);
   assert.deepEqual(unchanged, target);
+  const firstDecision = degradedAutoPosition('', 'all-active', true);
+  assert.deepEqual(firstDecision, { shouldPosition: true, nextKey: 'all-active' });
+  assert.deepEqual(degradedAutoPosition(firstDecision.nextKey, 'all-active', true), { shouldPosition: false, nextKey: 'all-active' });
+  assert.deepEqual(degradedAutoPosition(firstDecision.nextKey, 'question-active', true), { shouldPosition: true, nextKey: 'question-active' });
+  assert.deepEqual(degradedAutoPosition(firstDecision.nextKey, 'all-active', false), { shouldPosition: false, nextKey: '' });
 });
 
 test('a loaded session starts from fresh layout slots after the session generation reset', () => {
@@ -143,4 +149,10 @@ test('a loaded session starts from fresh layout slots after the session generati
   const fresh = reconcileMapLayout(resetMapLayout(), validateAnalysisState(loaded, utterances));
   assert.equal(Math.min(...Object.values(fresh.positions).map((position) => position.y)), 92);
   assert.equal(Object.keys(fresh.positions).some((id) => id.startsWith('map-node-')), false);
+});
+
+test('an edit draft can only commit to the item that opened the editor', () => {
+  assert.equal(canCommitMapEdit('node-a', 'node-a'), true);
+  assert.equal(canCommitMapEdit('node-a', 'node-b'), false);
+  assert.equal(canCommitMapEdit('', 'node-a'), false);
 });
