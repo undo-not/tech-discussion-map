@@ -21,6 +21,7 @@ export class LocalCaptionClient {
   #cursor = 0;
   #closed = false;
   #paused = false;
+  #controlPending = false;
 
   constructor(onEvent: (event: CaptionRuntimeEvent) => void) { this.#onEvent = onEvent; }
 
@@ -42,13 +43,25 @@ export class LocalCaptionClient {
   }
 
   async pause(): Promise<void> {
-    await this.#control('pause');
-    this.#paused = true;
+    if (this.#closed || this.#paused || this.#controlPending) return;
+    this.#controlPending = true;
+    try {
+      await this.#control('pause');
+      this.#paused = true;
+    } finally {
+      this.#controlPending = false;
+    }
   }
 
   async resume(): Promise<void> {
-    await this.#control('resume');
-    this.#paused = false;
+    if (this.#closed || !this.#paused || this.#controlPending) return;
+    this.#controlPending = true;
+    try {
+      await this.#control('resume');
+      this.#paused = false;
+    } finally {
+      this.#controlPending = false;
+    }
   }
 
   async stop(): Promise<void> {

@@ -33,6 +33,9 @@ constexpr DWORD OcrTimeoutMilliseconds = 5'000;
 constexpr std::size_t MaximumOcrOutputBytes = 512 * 1024;
 constexpr DWORD CaptureCadenceMilliseconds = 500;
 constexpr DWORD CaptureTimeoutMilliseconds = 2'000;
+constexpr DWORD CompanionProofTimeoutMilliseconds = 2'000;
+constexpr UINT_PTR SelectionTimerId = 1;
+constexpr UINT SelectionTimeoutMilliseconds = 60'000;
 
 class UniqueHandle final {
 public:
@@ -188,20 +191,75 @@ std::optional<std::wstring> ProcessImage(DWORD processId) {
     return std::wstring(path.data(), length);
 }
 
-bool ParentIsSameExecutable() {
+std::optional<DWORD> ParentProcessId() {
     const DWORD currentId = GetCurrentProcessId();
     UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
-    if (!snapshot) return false;
+    if (!snapshot) return std::nullopt;
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
-    DWORD parentId = 0;
-    if (!Process32FirstW(snapshot.get(), &entry)) return false;
+    if (!Process32FirstW(snapshot.get(), &entry)) return std::nullopt;
     do {
-        if (entry.th32ProcessID == currentId) { parentId = entry.th32ParentProcessID; break; }
+        if (entry.th32ProcessID == currentId && entry.th32ParentProcessID != 0) return entry.th32ParentProcessID;
     } while (Process32NextW(snapshot.get(), &entry));
+    return std::nullopt;
+}
+
+std::wstring_view ExecutableName(std::wstring_view path) {
+    const std::size_t separator = path.find_last_of(L"\\/");
+    return path.substr(separator == std::wstring_view::npos ? 0 : separator + 1);
+}
+
+bool ParentIsSameExecutable() {
+    const auto parentId = ParentProcessId();
+    if (!parentId) return false;
+    const DWORD currentId = GetCurrentProcessId();
     const auto current = ProcessImage(currentId);
-    const auto parent = ProcessImage(parentId);
+    const auto parent = ProcessImage(*parentId);
     return current && parent && _wcsicmp(current->c_str(), parent->c_str()) == 0;
+}
+
+bool ParentIsNode() {
+    const auto parentId = ParentProcessId();
+    if (!parentId) return false;
+    const auto parent = ProcessImage(*parentId);
+    return parent && _wcsicmp(std::wstring(ExecutableName(*parent)).c_str(), L"node.exe") == 0;
+}
+
+bool VerifyCompanionProof(std::string_view expected) {
+    if (!IsLowerSha256(expected) || !ParentIsNode()) return false;
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    if (!input || input == INVALID_HANDLE_VALUE || GetFileType(input) != FILE_TYPE_PIPE) return false;
+    std::array<unsigned char, 64> received{};
+    std::size_t offset = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CompanionProofTimeoutMilliseconds);
+    while (offset < received.size()) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr)) {
+            SecureZeroMemory(received.data(), received.size());
+            return false;
+        }
+        if (available > 0) {
+            DWORD read = 0;
+            const DWORD requested = static_cast<DWORD>(std::min<std::size_t>(available, received.size() - offset));
+            if (!ReadFile(input, received.data() + offset, requested, &read, nullptr) || read == 0) {
+                SecureZeroMemory(received.data(), received.size());
+                return false;
+            }
+            offset += read;
+            continue;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            SecureZeroMemory(received.data(), received.size());
+            return false;
+        }
+        Sleep(10);
+    }
+    DWORD extra = 0;
+    const bool noExtra = PeekNamedPipe(input, nullptr, 0, nullptr, &extra, nullptr) && extra == 0;
+    unsigned char difference = 0;
+    for (std::size_t index = 0; index < received.size(); ++index) difference |= received[index] ^ static_cast<unsigned char>(expected[index]);
+    SecureZeroMemory(received.data(), received.size());
+    return noExtra && difference == 0;
 }
 
 struct SelectionContext final {
@@ -260,6 +318,13 @@ LRESULT CALLBACK SelectionWindowProc(HWND window, UINT message, WPARAM wParam, L
                 return 0;
             }
             break;
+        case WM_TIMER:
+            if (wParam == SelectionTimerId) {
+                context->cancelled = true;
+                PostQuitMessage(0);
+                return 0;
+            }
+            break;
         case WM_PAINT: {
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(window, &paint);
@@ -305,6 +370,11 @@ std::optional<PixelRect> SelectCaptionRegion(HWND teamsWindow, const RECT& clien
     if (!overlay) return std::nullopt;
     SetLayeredWindowAttributes(overlay, 0, 100, LWA_ALPHA);
     SetWindowDisplayAffinity(overlay, WDA_EXCLUDEFROMCAPTURE);
+    if (SetTimer(overlay, SelectionTimerId, SelectionTimeoutMilliseconds, nullptr) == 0) {
+        DestroyWindow(overlay);
+        UnregisterClassW(ClassName, instance);
+        return std::nullopt;
+    }
     ShowWindow(overlay, SW_SHOW);
     SetForegroundWindow(overlay);
     SetFocus(overlay);
@@ -313,6 +383,7 @@ std::optional<PixelRect> SelectCaptionRegion(HWND teamsWindow, const RECT& clien
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    KillTimer(overlay, SelectionTimerId);
     DestroyWindow(overlay);
     UnregisterClassW(ClassName, instance);
     if (!context.complete || context.cancelled) return std::nullopt;
@@ -438,15 +509,60 @@ std::optional<std::vector<unsigned char>> CaptureSelectedBmpBounded(HWND window,
         std::to_wstring(selectionDpi);
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdInput = nullInput.get();
-    startup.hStdOutput = childOutput.get();
-    startup.hStdError = nullError.get();
+    UniqueHandle job(CreateJobObjectW(nullptr, nullptr));
+    if (!job) return std::nullopt;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    limits.BasicLimitInformation.ActiveProcessLimit = 1;
+    limits.ProcessMemoryLimit = 128ULL * 1024ULL * 1024ULL;
+    if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation, &limits, sizeof(limits))) return std::nullopt;
+
+    SIZE_T attributeBytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
+    if (attributeBytes == 0) return std::nullopt;
+    std::vector<unsigned char> attributeStorage(attributeBytes);
+    auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
+    if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attributeBytes)) return std::nullopt;
+    const std::array<HANDLE, 3> inherited{{nullInput.get(), childOutput.get(), nullError.get()}};
+    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        const_cast<HANDLE*>(inherited.data()), inherited.size() * sizeof(HANDLE), nullptr, nullptr)) {
+        DeleteProcThreadAttributeList(attributes);
+        SecureZeroMemory(attributeStorage.data(), attributeStorage.size());
+        return std::nullopt;
+    }
+
+    wchar_t windowsDirectory[MAX_PATH]{};
+    const UINT windowsLength = GetWindowsDirectoryW(windowsDirectory, MAX_PATH);
+    if (windowsLength == 0 || windowsLength >= MAX_PATH) {
+        DeleteProcThreadAttributeList(attributes);
+        SecureZeroMemory(attributeStorage.data(), attributeStorage.size());
+        return std::nullopt;
+    }
+    std::wstring environment = L"SystemRoot=";
+    environment.append(windowsDirectory, windowsLength);
+    environment.push_back(L'\0');
+    environment.push_back(L'\0');
+
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = nullInput.get();
+    startup.StartupInfo.hStdOutput = childOutput.get();
+    startup.StartupInfo.hStdError = nullError.get();
+    startup.lpAttributeList = attributes;
     PROCESS_INFORMATION processInfo{};
-    if (!CreateProcessW(executable.data(), mutableCommand.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &processInfo)) return std::nullopt;
+    const BOOL created = CreateProcessW(executable.data(), mutableCommand.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+        environment.data(), nullptr, &startup.StartupInfo, &processInfo);
+    DeleteProcThreadAttributeList(attributes);
+    SecureZeroMemory(attributeStorage.data(), attributeStorage.size());
+    if (!created) return std::nullopt;
     UniqueHandle process(processInfo.hProcess), thread(processInfo.hThread);
+    if (!AssignProcessToJobObject(job.get(), process.get()) || ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
+        TerminateProcess(process.get(), 2);
+        WaitForSingleObject(process.get(), 1'000);
+        return std::nullopt;
+    }
     childOutput.reset();
     std::vector<unsigned char> output;
     output.reserve(static_cast<std::size_t>(Width(selection)) * static_cast<std::size_t>(Height(selection)) * 4 + 64);
@@ -465,9 +581,10 @@ std::optional<std::vector<unsigned char>> CaptureSelectedBmpBounded(HWND window,
             continue;
         }
         if (WaitForSingleObject(process.get(), 0) == WAIT_OBJECT_0) break;
-        if (std::chrono::steady_clock::now() >= deadline) { failed = true; TerminateProcess(process.get(), 2); break; }
+        if (std::chrono::steady_clock::now() >= deadline) { failed = true; break; }
         Sleep(10);
     }
+    if (failed) TerminateJobObject(job.get(), 2);
     WaitForSingleObject(process.get(), 1'000);
     DWORD exitCode = 1;
     GetExitCodeProcess(process.get(), &exitCode);
@@ -476,8 +593,13 @@ std::optional<std::vector<unsigned char>> CaptureSelectedBmpBounded(HWND window,
         return std::nullopt;
     }
     BitmapFileHeader header{};
+    BITMAPINFOHEADER bitmapInfo{};
     std::memcpy(&header, output.data(), sizeof(header));
-    if (header.type != 0x4d42 || header.size != static_cast<DWORD>(output.size()) || header.offset != sizeof(BitmapFileHeader) + sizeof(BITMAPINFOHEADER)) {
+    std::memcpy(&bitmapInfo, output.data() + sizeof(header), sizeof(bitmapInfo));
+    const std::uint64_t expectedPixels = static_cast<std::uint64_t>(Width(selection)) * static_cast<std::uint64_t>(Height(selection)) * 4ULL;
+    if (header.type != 0x4d42 || header.size != static_cast<DWORD>(output.size()) || header.offset != sizeof(BitmapFileHeader) + sizeof(BITMAPINFOHEADER) ||
+        bitmapInfo.biSize != sizeof(BITMAPINFOHEADER) || bitmapInfo.biWidth != Width(selection) || bitmapInfo.biHeight != -Height(selection) ||
+        bitmapInfo.biPlanes != 1 || bitmapInfo.biBitCount != 32 || bitmapInfo.biCompression != BI_RGB || output.size() != header.offset + expectedPixels) {
         SecureZeroMemory(output.data(), output.size());
         return std::nullopt;
     }
@@ -555,7 +677,11 @@ TesseractResult RunTesseract(const OcrPaths& paths, std::vector<unsigned char>& 
     SecureZeroMemory(attributeStorage.data(), attributeStorage.size());
     if (!created) return TesseractResult::Unavailable;
     UniqueHandle process(processInfo.hProcess), thread(processInfo.hThread);
-    if (!AssignProcessToJobObject(job.get(), process.get()) || ResumeThread(thread.get()) == static_cast<DWORD>(-1)) return TesseractResult::Unavailable;
+    if (!AssignProcessToJobObject(job.get(), process.get()) || ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
+        TerminateProcess(process.get(), 2);
+        WaitForSingleObject(process.get(), 1'000);
+        return TesseractResult::Unavailable;
+    }
     childInput.reset();
     childOutput.reset();
 
@@ -690,11 +816,13 @@ int RunOcrStatus() {
     return std::fwrite(json.data(), 1, json.size(), stdout) == json.size() ? (ready ? 0 : 2) : 3;
 }
 
-int RunOcrCapture() {
-    if (GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) != FILE_TYPE_PIPE) return 2;
+int RunOcrCapture(std::string sessionProof) {
+    const bool companionVerified = GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_PIPE && VerifyCompanionProof(sessionProof);
+    SecureZeroMemory(sessionProof.data(), sessionProof.size());
+    sessionProof.clear();
+    if (!companionVerified) return 2;
     const auto paths = ResolveOcrPaths();
     if (!paths || !VerifyOcrInstallation(*paths)) { EmitState("degraded-caption-missing", "ocr-unavailable"); return 2; }
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     HWND teamsWindow = GetForegroundWindow();
     DWORD teamsProcess = 0;
     if (!IsExpectedTeamsWindow(teamsWindow, teamsProcess)) { EmitState("degraded-caption-missing", "teams-not-foreground"); return 2; }
@@ -729,19 +857,38 @@ int RunOcrCapture() {
             EmitState("degraded-caption-missing", ocr == TesseractResult::Timeout ? "ocr-timeout" : "ocr-unavailable");
             return 2;
         }
-        const auto parsed = ParseTesseractTsv(tsv);
+        auto parsed = ParseTesseractTsv(tsv);
         std::vector<SafeCaptionLine> safe;
         safe.reserve(parsed.size());
         for (const auto& line : parsed) {
             auto anonymized = aliases.Anonymize(line);
             if (anonymized) safe.push_back(std::move(*anonymized));
         }
+        for (auto& line : parsed) {
+            SecureZeroMemory(line.text.data(), line.text.size());
+            line.text.clear();
+        }
+        parsed.clear();
         SecureZeroMemory(tsv.data(), tsv.size());
         tsv.clear();
-        const CaptionFrameResult frame = tracker.Apply(safe, observedAtMs);
-        for (auto& line : safe) { SecureZeroMemory(line.text.data(), line.text.size()); line.text.clear(); }
+        auto frame = tracker.Apply(safe, observedAtMs);
+        for (auto& line : safe) {
+            SecureZeroMemory(line.text.data(), line.text.size());
+            line.text.clear();
+            SecureZeroMemory(line.speakerAlias.data(), line.speakerAlias.size());
+            line.speakerAlias.clear();
+        }
         if (frame.lowConfidence) { EmitState("degraded-low-confidence", "low-confidence"); return 2; }
-        for (const auto& event : frame.events) if (!EmitRowEvent(event)) return 3;
+        bool eventsWritten = true;
+        for (const auto& event : frame.events) if (!EmitRowEvent(event)) { eventsWritten = false; break; }
+        for (auto& event : frame.events) {
+            SecureZeroMemory(event.text.data(), event.text.size());
+            event.text.clear();
+            SecureZeroMemory(event.speakerAlias.data(), event.speakerAlias.size());
+            event.speakerAlias.clear();
+        }
+        frame.events.clear();
+        if (!eventsWritten) return 3;
         if (!EmitTick(observedAtMs)) return 3;
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - iterationStarted);
         if (elapsed.count() < CaptureCadenceMilliseconds) Sleep(CaptureCadenceMilliseconds - static_cast<DWORD>(elapsed.count()));

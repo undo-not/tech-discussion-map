@@ -54,6 +54,7 @@ int main() {
     const auto same = aliases.Anonymize({"2", "Alice: another", 95});
     Require(same && same->speakerAlias == "speaker-1", "alias not stable");
     Require(!aliases.Anonymize({"3", "possible raw name without boundary", 95}), "ambiguous line crossed identity boundary");
+    Require(!aliases.Anonymize({"3b", "Caption: Alice: secret", 95}), "second identity boundary crossed into caption text");
     const auto anonymous = aliases.Anonymize({"4", "匿名：合成発話", 95});
     Require(anonymous && anonymous->speaker == "anonymous" && anonymous->speakerAlias.empty(), "anonymous speaker not normalized");
     aliases.Clear();
@@ -73,5 +74,23 @@ int main() {
     Require(disappeared.events.size() == 1 && disappeared.events[0].type == CaptionRowEvent::Type::Disappeared, "row disappearance not emitted");
     const std::vector<SafeCaptionLine> weak{{"line-2", "unknown", {}, "synthetic weak", 84}};
     Require(tracker.Apply(weak, 3'100).lowConfidence, "low confidence not signaled");
+
+    CaptionRowTracker scrolling("ocr-scroll-");
+    const std::vector<SafeCaptionLine> beforeScroll{
+        {"line-1", "displayed-alias", "speaker-1", "first utterance", 95},
+        {"line-2", "displayed-alias", "speaker-2", "second utterance", 95},
+    };
+    scrolling.Apply(beforeScroll, 100);
+    const auto initialRows = scrolling.Apply(beforeScroll, 600);
+    Require(initialRows.events.size() == 2, "initial scrolling rows not emitted");
+    const std::vector<SafeCaptionLine> afterScroll{
+        {"line-1", "displayed-alias", "speaker-2", "second utterance", 95},
+        {"line-2", "displayed-alias", "speaker-1", "third unrelated utterance", 95},
+    };
+    const auto scrollStarted = scrolling.Apply(afterScroll, 1'100);
+    Require(scrollStarted.events.size() == 1 && scrollStarted.events[0].type == CaptionRowEvent::Type::Disappeared &&
+        scrollStarted.events[0].rowId == "ocr-scroll-1", "scrolled-out row was rewritten instead of finalized");
+    const auto scrollSettled = scrolling.Apply(afterScroll, 1'600);
+    Require(scrollSettled.events.size() == 1 && scrollSettled.events[0].rowId == "ocr-scroll-3", "new scrolled row reused an old identity");
     return 0;
 }

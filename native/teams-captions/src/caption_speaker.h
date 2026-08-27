@@ -38,7 +38,7 @@ public:
         std::string_view body(input.text.data() + separator + colonBytes, input.text.size() - separator - colonBytes);
         Trim(name);
         Trim(body);
-        if (name.empty() || body.empty() || HasUnsafeName(name)) {
+        if (name.empty() || body.empty() || HasUnsafeName(name) || body.find(':') != std::string_view::npos || body.find("：") != std::string_view::npos) {
             return std::nullopt;
         }
         if (name == "Anonymous" || name == "Speaker" || name == "匿名" || name == "話者") {

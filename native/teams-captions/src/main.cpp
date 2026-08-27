@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <cstdio>
 #include <cwchar>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -233,18 +235,32 @@ void PrintUsage() {
         "  techmap-captions probe\n"
         "  techmap-captions probe-at-cursor --consent-confirmed\n"
         "  techmap-captions ocr-status\n"
-        "  techmap-captions ocr-capture --consent-confirmed\n");
+        "  techmap-captions ocr-capture --consent-confirmed --session-proof <companion-generated>\n");
+}
+
+std::optional<std::string> ParseSessionProof(const wchar_t* value) {
+    if (!value || wcslen(value) != 64) return std::nullopt;
+    std::string proof;
+    proof.reserve(64);
+    for (std::size_t index = 0; index < 64; ++index) {
+        const wchar_t character = value[index];
+        if (!((character >= L'0' && character <= L'9') || (character >= L'a' && character <= L'f'))) return std::nullopt;
+        proof.push_back(static_cast<char>(character));
+    }
+    return proof;
 }
 
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (argc == 2 && wcscmp(argv[1], L"contract") == 0) return RunContract();
     if (argc == 2 && wcscmp(argv[1], L"ocr-status") == 0) return techmap::captions::RunOcrStatus();
     if (argc >= 2 && wcscmp(argv[1], L"ocr-capture") == 0) {
-        const bool consentConfirmed = argc == 3 && wcscmp(argv[2], L"--consent-confirmed") == 0;
-        if (!consentConfirmed) return EmitSimpleState("consent-required") == 0 ? 2 : 3;
-        return techmap::captions::RunOcrCapture();
+        const bool consentConfirmed = argc == 5 && wcscmp(argv[2], L"--consent-confirmed") == 0 && wcscmp(argv[3], L"--session-proof") == 0;
+        const auto sessionProof = consentConfirmed ? ParseSessionProof(argv[4]) : std::nullopt;
+        if (!sessionProof) return EmitSimpleState("consent-required") == 0 ? 2 : 3;
+        return techmap::captions::RunOcrCapture(std::move(*sessionProof));
     }
     if (argc == 8 && wcscmp(argv[1], L"capture-frame-worker") == 0) {
         wchar_t* end = nullptr;

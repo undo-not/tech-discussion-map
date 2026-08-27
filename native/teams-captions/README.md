@@ -43,8 +43,8 @@ setup scriptはnetworkへアクセスせず、hash検証後にversion commandを
 1. `node companion/local-transcription-host.mjs`とlocal UIを起動する。
 2. Teamsライブキャプションを表示し、Teamsをforegroundにする。
 3. UIで全参加者同意を確認し、`Teams字幕OCRを開始`を押す。
-4. native overlayで字幕本文と発話者だけを含む矩形をdragする。
+4. 60秒以内にnative overlayで字幕本文と発話者だけを含む矩形をdragする。
 5. Teamsの最小化、遮蔽、移動、DPI変更、低confidenceでdegradedになった場合は、状態を直して新しく開始する。
 6. 一時停止はcapture processとbufferを破棄する。再開時は矩形を再選択する。
 
-`ocr-capture`はcompanionがanonymous stdout pipeを接続した場合だけ動作するため、terminalから直接captureできません。選択矩形のbitmap、TSV、raw表示名はfile、clipboard、log、networkへ出さず、alias済みcaption eventだけをloopback companionへ渡します。実会議dataや診断出力をIssue、PR、Git、CI artifactへ置かないでください。
+`ocr-capture`は、親がlocal Node companion、stdin/stdoutがpipe、command lineとstdinの一回限り証明が一致する場合だけ動作するため、通常のterminalから直接captureできません。選択矩形のbitmap、TSV、raw表示名はfile、clipboard、log、networkへ出さず、alias済みcaption eventだけをloopback companionへ渡します。一時停止・停止時は未配信eventとparser bufferも破棄します。実会議dataや診断出力をIssue、PR、Git、CI artifactへ置かないでください。

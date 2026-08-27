@@ -146,7 +146,7 @@ export function createCompanionServer(options = {}) {
   const workerPath = resolve(options.workerPath ?? environment.TECHMAP_TRANSCRIBER_PATH ?? defaults.workerPath);
   const captionWorkerPath = resolve(options.captionWorkerPath ?? environment.TECHMAP_CAPTIONS_PATH ?? defaults.captionWorkerPath);
   const spawnWorker = options.spawnWorker ?? ((args) => spawn(workerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
-  const spawnCaptionWorker = options.spawnCaptionWorker ?? ((args) => spawn(captionWorkerPath, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }));
+  const spawnCaptionWorker = options.spawnCaptionWorker ?? ((args) => spawn(captionWorkerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
   const privacyStore = options.privacyStore ?? createPrivacyStore({ environment });
   const launchSecret = options.launchSecret ?? randomBytes(32).toString('hex');
   if (!/^[a-f0-9]{64}$/.test(launchSecret)) throw new Error('invalid-launch-secret');
@@ -244,14 +244,29 @@ export function createCompanionServer(options = {}) {
       catch { return sendJson(response, 503, { error: 'session-not-deleted' }, origin); }
     }
 
+    const clearCaptionSessionBuffers = (session) => {
+      if (session.parser?.buffer) session.parser.buffer.fill(0);
+      session.parser = { buffer: Buffer.alloc(0) };
+      session.events.length = 0;
+    };
+
+    const detachCaptionWorker = (session) => {
+      const worker = session.worker;
+      session.worker = null;
+      if (worker && !worker.killed) worker.kill();
+    };
+
     const attachCaptionWorker = (session) => {
-      const worker = spawnCaptionWorker(['ocr-capture', '--consent-confirmed']);
+      detachCaptionWorker(session);
+      clearCaptionSessionBuffers(session);
+      const sessionProof = randomBytes(32).toString('hex');
+      const worker = spawnCaptionWorker(['ocr-capture', '--consent-confirmed', '--session-proof', sessionProof]);
       session.worker = worker;
       session.stopped = false;
       session.paused = false;
-      session.parser = { buffer: Buffer.alloc(0) };
+      worker.stdin.end(sessionProof);
       worker.stdout.on('data', (chunk) => {
-        if (session.worker !== worker) return;
+        if (session.worker !== worker || session.paused || session.stopped) { chunk.fill(0); return; }
         try {
           for (const event of parseWorkerEvents(session.parser, chunk).map(validateCaptionWorkerEvent)) {
             session.cursor += 1;
@@ -260,7 +275,10 @@ export function createCompanionServer(options = {}) {
           }
         } catch {
           session.stopped = true;
+          clearCaptionSessionBuffers(session);
           worker.kill();
+        } finally {
+          chunk.fill(0);
         }
       });
       worker.on('error', () => { if (session.worker === worker && !session.paused) session.stopped = true; });
@@ -297,19 +315,24 @@ export function createCompanionServer(options = {}) {
         return sendJson(response, 200, { cursor: captionSession.cursor, events: captionSession.events.filter((event) => event.cursor > after).map((event) => event.value), stopped: captionSession.stopped, paused: captionSession.paused }, origin);
       }
       if (request.method === 'POST' && action === 'pause') {
+        if (captionSession.stopped) return sendJson(response, 409, { error: 'caption-session-stopped' }, origin);
+        if (captionSession.paused) return sendJson(response, 200, { state: 'paused', reselectOnResume: true }, origin);
         captionSession.paused = true;
-        if (captionSession.worker && !captionSession.worker.killed) captionSession.worker.kill();
+        clearCaptionSessionBuffers(captionSession);
+        detachCaptionWorker(captionSession);
         return sendJson(response, 200, { state: 'paused', reselectOnResume: true }, origin);
       }
       if (request.method === 'POST' && action === 'resume') {
-        if (captionSession.stopped && !captionSession.paused) return sendJson(response, 409, { error: 'caption-session-stopped' }, origin);
+        if (captionSession.stopped) return sendJson(response, 409, { error: 'caption-session-stopped' }, origin);
+        if (!captionSession.paused) return sendJson(response, 409, { error: 'caption-session-not-paused' }, origin);
         attachCaptionWorker(captionSession);
         return sendJson(response, 200, { state: 'selecting-target' }, origin);
       }
       if (request.method === 'POST' && action === 'stop') {
         captionSession.paused = false;
         captionSession.stopped = true;
-        if (captionSession.worker && !captionSession.worker.killed) captionSession.worker.kill();
+        clearCaptionSessionBuffers(captionSession);
+        detachCaptionWorker(captionSession);
         setTimeout(() => captionSessions.delete(captionSession.id), 60_000).unref();
         return sendJson(response, 200, { state: 'stopped' }, origin);
       }
@@ -391,7 +414,11 @@ export function createCompanionServer(options = {}) {
 
   server.on('close', () => {
     for (const session of sessions.values()) if (!session.worker.killed) session.worker.kill();
-    for (const session of captionSessions.values()) if (session.worker && !session.worker.killed) session.worker.kill();
+    for (const session of captionSessions.values()) {
+      if (session.parser?.buffer) session.parser.buffer.fill(0);
+      session.events.length = 0;
+      if (session.worker && !session.worker.killed) session.worker.kill();
+    }
     sessions.clear();
     captionSessions.clear();
     tokens.clear();

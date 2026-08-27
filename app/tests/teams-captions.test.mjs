@@ -53,7 +53,13 @@ test('OCR capture is consent-gated, selected-region-only, bounded, and memory-on
   const main = await readFile(resolve(root, 'native', 'teams-captions', 'src', 'main.cpp'), 'utf8');
   const runtime = await readFile(resolve(root, 'native', 'teams-captions', 'src', 'ocr_runtime.cpp'), 'utf8');
   assert.match(main, /ocr-capture.*--consent-confirmed/s);
-  assert.match(runtime, /GetFileType\(GetStdHandle\(STD_OUTPUT_HANDLE\)\) != FILE_TYPE_PIPE/);
+  assert.match(main, /--session-proof/);
+  const entryPoint = main.slice(main.indexOf('int wmain'), main.indexOf('if (argc == 2 && wcscmp(argv[1], L"contract")'));
+  assert.match(entryPoint, /SetProcessDpiAwarenessContext\(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2\)/);
+  assert.match(runtime, /GetFileType\(GetStdHandle\(STD_OUTPUT_HANDLE\)\) == FILE_TYPE_PIPE/);
+  assert.match(runtime, /GetFileType\(input\) != FILE_TYPE_PIPE/);
+  assert.match(runtime, /VerifyCompanionProof/);
+  assert.match(runtime, /ParentIsNode/);
   assert.match(runtime, /SetWindowDisplayAffinity\(overlay, WDA_EXCLUDEFROMCAPTURE\)/);
   assert.match(runtime, /const int width = static_cast<int>\(Width\(selection\)\)/);
   assert.match(runtime, /CreateDIBSection/);
@@ -63,6 +69,12 @@ test('OCR capture is consent-gated, selected-region-only, bounded, and memory-on
   assert.match(runtime, /CaptureTimeoutMilliseconds/);
   assert.match(runtime, /capture-frame-worker/);
   assert.match(runtime, /ParentIsSameExecutable/);
+  const frameWorker = runtime.slice(runtime.indexOf('std::optional<std::vector<unsigned char>> CaptureSelectedBmpBounded'), runtime.indexOf('enum class TesseractResult'));
+  assert.match(frameWorker, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/);
+  assert.match(frameWorker, /CREATE_SUSPENDED/);
+  assert.match(frameWorker, /AssignProcessToJobObject/);
+  assert.match(frameWorker, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE/);
+  assert.match(frameWorker, /SystemRoot=/);
   assert.doesNotMatch(runtime, /CREATE_ALWAYS|OPEN_ALWAYS|TRUNCATE_EXISTING|OpenClipboard|SetClipboardData|WinHttp|URLDownload|socket\s*\(|send\s*\(/);
 });
 
@@ -93,6 +105,8 @@ test('raw OCR names and TSV are anonymized before framed output', async () => {
   const outputBoundary = runtime.slice(runtime.indexOf('bool EmitRowEvent'), runtime.indexOf('const char* DecisionReason'));
   assert.match(speaker, /speaker-/);
   assert.match(speaker, /std::fill\(entry\.name\.begin\(\), entry\.name\.end\(\), '\\0'\)/);
+  assert.match(runtime, /SecureZeroMemory\(line\.text\.data\(\), line\.text\.size\(\)\)/);
+  assert.match(runtime, /SecureZeroMemory\(event\.text\.data\(\), event\.text\.size\(\)\)/);
   assert.ok(runtime.indexOf('bool EmitRowEvent') >= 0);
   assert.ok(runtime.indexOf('const char* DecisionReason') >= 0);
   assert.doesNotMatch(outputBoundary, /displayName|participant|tsv|bitmap|pixels/);
