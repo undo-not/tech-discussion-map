@@ -18,9 +18,11 @@ const observation = {
   observedAtMs: 1_000,
   text: '合成された設計案',
 };
+const activeUiaState = { ...emptyCaptionAssemblerState, sourceState: 'active-uia' };
+const activeOcrState = { ...emptyCaptionAssemblerState, sourceState: 'active-ocr' };
 
 test('caption rewrites become one partial followed by a deterministic final', () => {
-  let assembled = applyCaptionSourceEvent(emptyCaptionAssemblerState, { type: 'observation', observation });
+  let assembled = applyCaptionSourceEvent(activeUiaState, { type: 'observation', observation });
   assert.equal(assembled.utterances[0].phase, 'partial');
   assembled = applyCaptionSourceEvent(assembled.state, {
     type: 'observation',
@@ -34,7 +36,7 @@ test('caption rewrites become one partial followed by a deterministic final', ()
 });
 
 test('duplicates are ignored and a later correction is emitted as corrected final', () => {
-  let assembled = applyCaptionSourceEvent(emptyCaptionAssemblerState, { type: 'observation', observation });
+  let assembled = applyCaptionSourceEvent(activeUiaState, { type: 'observation', observation });
   const duplicate = applyCaptionSourceEvent(assembled.state, { type: 'observation', observation });
   assert.equal(duplicate.utterances.length, 0);
   assembled = applyCaptionSourceEvent(assembled.state, { type: 'row-disappeared', rowId: 'row-1', observedAtMs: 1_100 });
@@ -54,22 +56,25 @@ test('duplicates are ignored and a later correction is emitted as corrected fina
 });
 
 test('low-confidence OCR fails closed without emitting meeting text', () => {
-  const result = applyCaptionSourceEvent(emptyCaptionAssemblerState, {
+  const result = applyCaptionSourceEvent(activeOcrState, {
     type: 'observation',
     observation: { ...observation, source: 'teams-ocr', confidence: 84 },
   });
-  assert.equal(result.state.sourceState, 'degraded-low-confidence');
+  assert.equal(result.state.sourceState, 'active-ocr');
+  assert.equal(result.signal, 'low-confidence');
   assert.deepEqual(result.utterances, []);
+  assert.equal(transitionCaptionSource(result.state.sourceState, { type: result.signal }), 'degraded-low-confidence');
 });
 
 test('OCR engines without confidence require two identical stable samples', () => {
-  const unstable = applyCaptionSourceEvent(emptyCaptionAssemblerState, {
+  const unstable = applyCaptionSourceEvent(activeOcrState, {
     type: 'observation',
     observation: { ...observation, source: 'teams-ocr', stableSamples: 1 },
   });
-  assert.equal(unstable.state.sourceState, 'degraded-low-confidence');
+  assert.equal(unstable.state.sourceState, 'active-ocr');
+  assert.equal(unstable.signal, 'low-confidence');
   assert.deepEqual(unstable.utterances, []);
-  const stable = applyCaptionSourceEvent(emptyCaptionAssemblerState, {
+  const stable = applyCaptionSourceEvent(activeOcrState, {
     type: 'observation',
     observation: { ...observation, source: 'teams-ocr', stableSamples: 2 },
   });
@@ -78,7 +83,7 @@ test('OCR engines without confidence require two identical stable samples', () =
 });
 
 test('only bounded aliases cross the caption domain boundary', () => {
-  assert.throws(() => applyCaptionSourceEvent(emptyCaptionAssemblerState, {
+  assert.throws(() => applyCaptionSourceEvent(activeUiaState, {
     type: 'observation',
     observation: { ...observation, speakerAlias: 'Example Person' },
   }), /invalid-caption-observation/);
@@ -90,6 +95,43 @@ test('only bounded aliases cross the caption domain boundary', () => {
     id: 'caption_row-1', revision: 1, phase: 'partial', source: 'teams-caption',
     speaker: 'anonymous', startMs: 0, endMs: 1, text: 'synthetic',
   }));
+});
+
+test('observation cannot activate or switch a selected source', () => {
+  assert.throws(() => applyCaptionSourceEvent(emptyCaptionAssemblerState, {
+    type: 'observation', observation,
+  }), /caption-source-not-active/);
+  assert.throws(() => applyCaptionSourceEvent(activeUiaState, {
+    type: 'observation', observation: { ...observation, source: 'teams-ocr', confidence: 95 },
+  }), /caption-source-not-active/);
+});
+
+test('OCR quality signals are mutually exclusive and recovery is explicit', () => {
+  assert.throws(() => applyCaptionSourceEvent(activeOcrState, {
+    type: 'observation',
+    observation: { ...observation, source: 'teams-ocr', confidence: 10, stableSamples: 2 },
+  }), /invalid-caption-observation/);
+  const degraded = transitionCaptionSource('active-ocr', { type: 'low-confidence' });
+  assert.throws(() => applyCaptionSourceEvent({ sourceState: degraded, rows: [] }, {
+    type: 'observation', observation: { ...observation, source: 'teams-ocr', confidence: 95 },
+  }), /caption-source-not-active/);
+  assert.equal(transitionCaptionSource(degraded, { type: 'quality-recovered' }), 'active-ocr');
+});
+
+test('timer interleaving ignores rows newer than the tick', () => {
+  let assembled = applyCaptionSourceEvent(activeUiaState, { type: 'observation', observation });
+  assembled = applyCaptionSourceEvent(assembled.state, {
+    type: 'observation',
+    observation: { ...observation, rowId: 'row-2', observedAtMs: 2_000 },
+  });
+  const ticked = applyCaptionSourceEvent(assembled.state, {
+    type: 'tick', observedAtMs: 1_000 + captionSettleMilliseconds,
+  });
+  assert.equal(ticked.utterances.length, 1);
+  assert.equal(ticked.utterances[0].id, 'caption_row-1');
+  assert.throws(() => applyCaptionSourceEvent(assembled.state, {
+    type: 'row-disappeared', rowId: 'row-2', observedAtMs: 1_999,
+  }), /caption-clock-regressed/);
 });
 
 test('caption capture cannot activate before consent and explicit target selection', () => {

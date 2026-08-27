@@ -41,6 +41,7 @@ export type CaptionAssemblerState = {
 export type CaptionAssemblerResult = {
   state: CaptionAssemblerState;
   utterances: TranscriptUtterance[];
+  signal?: 'low-confidence';
 };
 
 export type CaptionSourceEvent =
@@ -69,6 +70,8 @@ function parseSafeCaptionObservation(value: unknown): SafeCaptionObservation {
   const stableSamplesIsValid = source === 'teams-ocr'
     ? item.stableSamples === undefined || (Number.isInteger(item.stableSamples) && (item.stableSamples as number) >= 1 && (item.stableSamples as number) <= 10)
     : item.stableSamples === undefined;
+  const hasExactlyOneOcrQualitySignal = source !== 'teams-ocr' ||
+    ((item.confidence === undefined) !== (item.stableSamples === undefined));
   const aliasIsValid = speaker === 'displayed-alias'
     ? typeof item.speakerAlias === 'string' && safeSpeakerAlias.test(item.speakerAlias)
     : item.speakerAlias === undefined;
@@ -80,7 +83,7 @@ function parseSafeCaptionObservation(value: unknown): SafeCaptionObservation {
     !aliasIsValid ||
     !Number.isSafeInteger(item.observedAtMs) || (item.observedAtMs as number) < 0 ||
     typeof item.text !== 'string' || item.text.trim().length === 0 || item.text.length > 8_000 ||
-    !confidenceIsValid || !stableSamplesIsValid
+    !confidenceIsValid || !stableSamplesIsValid || !hasExactlyOneOcrQualitySignal
   ) {
     throw new Error('invalid-caption-observation');
   }
@@ -127,11 +130,13 @@ export function applyCaptionSourceEvent(
 ): CaptionAssemblerResult {
   if (event.type === 'observation') {
     const incoming = parseSafeCaptionObservation(event.observation);
+    const expectedState = incoming.source === 'teams-uia' ? 'active-uia' : 'active-ocr';
+    if (current.sourceState !== expectedState) throw new Error('caption-source-not-active');
     const ocrQualityAccepted = incoming.source !== 'teams-ocr' ||
       (typeof incoming.confidence === 'number' && incoming.confidence >= minimumOcrConfidence) ||
       (typeof incoming.stableSamples === 'number' && incoming.stableSamples >= minimumOcrStableSamples);
     if (!ocrQualityAccepted) {
-      return { state: { ...current, sourceState: 'degraded-low-confidence' }, utterances: [] };
+      return { state: current, utterances: [], signal: 'low-confidence' };
     }
     const existing = current.rows.find((row) => row.observation.rowId === incoming.rowId);
     if (existing && incoming.revision <= existing.observation.revision) return { state: current, utterances: [] };
@@ -143,19 +148,23 @@ export function applyCaptionSourceEvent(
     };
     const rows = pruneRows(current.rows.filter((candidate) => candidate.observation.rowId !== incoming.rowId).concat(row));
     return {
-      state: { sourceState: incoming.source === 'teams-uia' ? 'active-uia' : 'active-ocr', rows },
+      state: { ...current, rows },
       utterances: [toUtterance(row, row.finalized ? 'final' : 'partial')],
     };
   }
 
   if (!Number.isSafeInteger(event.observedAtMs) || event.observedAtMs < 0) throw new Error('invalid-caption-clock');
   if (event.type === 'row-disappeared' && !safeRowId.test(event.rowId)) throw new Error('invalid-caption-row');
-  if (current.rows.some((row) => row.observation.observedAtMs > event.observedAtMs)) throw new Error('caption-clock-regressed');
+  if (event.type === 'row-disappeared') {
+    const target = current.rows.find((row) => row.observation.rowId === event.rowId);
+    if (target && target.observation.observedAtMs > event.observedAtMs) throw new Error('caption-clock-regressed');
+  }
   const finalized: TranscriptUtterance[] = [];
   const rows = current.rows.map((row) => {
     const shouldFinalize = !row.finalized && (
       (event.type === 'row-disappeared' && row.observation.rowId === event.rowId) ||
-      (event.type === 'tick' && event.observedAtMs - row.observation.observedAtMs >= captionSettleMilliseconds)
+      (event.type === 'tick' && event.observedAtMs >= row.observation.observedAtMs &&
+        event.observedAtMs - row.observation.observedAtMs >= captionSettleMilliseconds)
     );
     if (!shouldFinalize) return row;
     const next = { ...row, finalized: true };
@@ -172,6 +181,7 @@ export type CaptionSourceSessionEvent =
   | { type: 'ocr-connected' }
   | { type: 'caption-missing' }
   | { type: 'low-confidence' }
+  | { type: 'quality-recovered' }
   | { type: 'stop' };
 
 export function transitionCaptionSource(current: CaptionSourceState, event: CaptionSourceSessionEvent): CaptionSourceState {
@@ -188,6 +198,8 @@ export function transitionCaptionSource(current: CaptionSourceState, event: Capt
       return current === 'active-uia' || current === 'active-ocr' ? 'degraded-caption-missing' : current;
     case 'low-confidence':
       return current === 'active-ocr' ? 'degraded-low-confidence' : current;
+    case 'quality-recovered':
+      return current === 'degraded-low-confidence' ? 'active-ocr' : current;
     case 'stop':
       return 'stopped';
   }

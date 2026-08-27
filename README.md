@@ -4,7 +4,7 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 
 ## Product boundary
 
-本番runtimeはWindowsローカルcompanionとして動作し、利用者の明示操作によるマイク入力とTeams processに限定したapplication loopbackを交換可能なadapterで扱います。Microsoft Graphは会議後の照合候補です。Teams media botはlocal-only境界に反するため採用せず、meeting side panelはhosting境界を変更する場合の将来UI候補に限ります。ChatGPT Sitesは合成データのUI review専用です。生音声は保存せず、文字起こしと分析結果はGit working tree外へローカル保存できます。OpenAI API送信はIssue #3と#6のredaction、保持、`store: false`境界に従います。詳細は[ADR-0002](docs/adr/0002-local-windows-teams-audio-boundary.md)を参照してください。
+本番runtimeはWindowsローカルcompanionとして動作します。MVPの第一入力候補は、利用者が明示選択したTeamsライブキャプション矩形のmemory-only local OCRです。安定selectorを実機で証明できたTeams buildだけUI Automationを任意最適化として使い、字幕を利用できない場合に限って、利用者の明示操作でマイク入力とTeams process限定application loopbackをlocal Whisperへ切り替えます。Microsoft Graphは会議後の照合候補です。Teams media botはlocal-only境界に反するため採用せず、meeting side panelはhosting境界を変更する場合の将来UI候補に限ります。ChatGPT Sitesは合成データのUI review専用です。生音声とOCR画像は保存せず、匿名化済み文字起こしと分析結果はGit working tree外へローカル保存できます。OpenAI API送信はIssue #3と#6のredaction、保持、`store: false`境界に従います。詳細は[ADR-0007](docs/adr/0007-teams-live-captions-first.md)と[ADR-0002](docs/adr/0002-local-windows-teams-audio-boundary.md)を参照してください。
 
 ## Repository layout
 
@@ -35,7 +35,7 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 
 Windows音声helperのbuildと非capturing capability checkは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。実会議captureはIssue #6の同意・privacy gateが完成するまで実行しません。
 
-Issue #17ではTeams字幕をWindows UI Automationから取得できるかを安全に検証しています。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、Teams top-level windowからUI Automation rootを取得できるかだけをローカル表示します。字幕本文の取得経路はまだMVPへ接続されていません。
+Issue #17ではTeams字幕入力の安全な境界を検証しています。対象PCでUI Automation probeがtimeoutしたため、実装本線はIssue #19の選択矩形local OCRです。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、Teams top-level windowからUI Automation rootを取得できるかだけをローカル表示します。字幕本文の取得経路はまだMVPへ接続されていません。
 
 ```powershell
 cmake -S native/teams-captions -B native/teams-captions/build -A x64

@@ -176,9 +176,11 @@ int EmitWorkerResult(DWORD result, bool cursorProbe) {
     if (result == CursorUnavailable) return EmitSimpleState("cursor-unavailable") == 0 ? 2 : 3;
     if (result == CursorElementUnavailable) return EmitSimpleState("element-unavailable") == 0 ? 2 : 3;
     if (result == CursorTeamsElementRequired) return EmitSimpleState("teams-element-required") == 0 ? 2 : 3;
-    if ((result & CursorSuccessBase) == 0) return EmitSimpleState("uia-unavailable") == 0 ? 2 : 3;
+    if (result < CursorSuccessBase || result > CursorSuccessBase + 63) {
+        return EmitSimpleState("uia-unavailable") == 0 ? 2 : 3;
+    }
 
-    const DWORD flags = result & ~CursorSuccessBase;
+    const DWORD flags = result - CursorSuccessBase;
     std::ostringstream json;
     json << "{\"contractVersion\":1,\"state\":\"teams-element-inspected\""
          << ",\"namePresent\":" << ((flags & 1) != 0 ? "true" : "false")
