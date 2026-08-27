@@ -1,0 +1,43 @@
+name: 成果Issue
+description: 実装・調査・保守を、受入可能な成果単位で定義する
+title: ""
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 成果
+      description: 完了時に利用者またはsystemにとって何が可能になるか。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 対象範囲
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: 対象外
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 受入条件
+      description: 観測可能なチェックリストとして記述する。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 必要な証拠
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: 依存関係・安全境界・外部作用
+      description: 外部systemやデータを変更・公開できる範囲も明示する。
+    validations:
+      required: true

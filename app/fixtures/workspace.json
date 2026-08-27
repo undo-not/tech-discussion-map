@@ -1,0 +1,21 @@
+{
+  "transcript": [
+    { "id": "utt-001", "initials": "MK", "name": "森", "time": "10:14", "text": "Teamsの会話を止めずに、論点と決定事項が見える状態を作りたいです。", "tone": "mint", "mapNodeId": "root" },
+    { "id": "utt-002", "initials": "SI", "name": "石井", "time": "10:15", "text": "最初はマイク入力で検証して、Teams API連携は権限と遅延を調査してからにしましょう。", "tone": "blue", "mapNodeId": "mvp" },
+    { "id": "utt-003", "initials": "AY", "name": "山本", "time": "10:16", "text": "マップの項目から根拠の発話へ戻れることも受入条件に入れたいです。", "tone": "amber", "mapNodeId": "quality" },
+    { "id": "utt-004", "initials": "MK", "name": "森", "time": "10:17", "text": "実会議では参加者の同意を確認し、生音声を保存しない方針を画面に出しましょう。", "tone": "mint", "mapNodeId": "privacy" }
+  ],
+  "nodes": [
+    { "id": "root", "kind": "root", "label": "中心テーマ", "title": "リアルタイム技術会議支援", "detail": "会話を止めずに構造化", "source": "human", "utteranceIds": ["utt-001"] },
+    { "id": "mvp", "kind": "decision", "label": "決定", "title": "MVPの入力方式", "detail": "マイク入力から開始", "source": "human", "utteranceIds": ["utt-002"] },
+    { "id": "teams", "kind": "question", "label": "未解決", "title": "Teams連携", "detail": "字幕 / Graph / Bot", "source": "ai", "utteranceIds": ["utt-002"] },
+    { "id": "quality", "kind": "topic", "label": "要件", "title": "分析品質", "detail": "根拠発話へ遡れる", "source": "human", "utteranceIds": ["utt-003"] },
+    { "id": "privacy", "kind": "risk", "label": "リスク", "title": "プライバシー", "detail": "同意と保持方針", "source": "ai", "utteranceIds": ["utt-004"] }
+  ],
+  "insights": [
+    { "id": "ins-001", "type": "決定", "text": "MVPはマイク入力方式で開始する", "meta": "2分前", "tone": "decision", "source": "human", "utteranceIds": ["utt-002"], "mapNodeId": "mvp" },
+    { "id": "ins-002", "type": "質問", "text": "Teams字幕はリアルタイム取得できるか？", "meta": "未解決", "tone": "question", "source": "ai", "utteranceIds": ["utt-002"], "mapNodeId": "teams" },
+    { "id": "ins-003", "type": "Action", "text": "Graph APIの権限と遅延を調査", "meta": "担当：石井", "tone": "action", "source": "ai", "utteranceIds": ["utt-002"], "mapNodeId": "teams" },
+    { "id": "ins-004", "type": "リスク", "text": "参加者同意と音声保持を明示する", "meta": "要確認", "tone": "risk", "source": "ai", "utteranceIds": ["utt-004"], "mapNodeId": "privacy" }
+  ]
+}
