@@ -80,6 +80,23 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  native-teams-captions:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Teams caption capability probe
+        run: cmake -S native/teams-captions -B native/teams-captions/build -A x64
+      - name: Build Teams caption capability probe
+        run: cmake --build native/teams-captions/build --config Release
+      - name: Test content-free probe contract
+        run: ctest --test-dir native/teams-captions/build -C Release --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: techmap-captions-windows-x64
+          path: native/teams-captions/build/Release/techmap-captions.exe
+          if-no-files-found: error
+          retention-days: 7
+
   native-privacy:
     runs-on: windows-latest
     steps:

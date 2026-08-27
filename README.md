@@ -35,6 +35,17 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 
 Windows音声helperのbuildと非capturing capability checkは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。実会議captureはIssue #6の同意・privacy gateが完成するまで実行しません。
 
+Issue #17ではTeams字幕をWindows UI Automationから取得できるかを安全に検証しています。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、UI Automation controlの集計だけをローカル表示します。字幕本文の取得経路はまだMVPへ接続されていません。
+
+```powershell
+cmake -S native/teams-captions -B native/teams-captions/build -A x64
+cmake --build native/teams-captions/build --config Release
+ctest --test-dir native/teams-captions/build -C Release --output-on-failure
+native/teams-captions/build/Release/techmap-captions.exe probe
+```
+
+`probe-at-cursor`は本人のみの合成テスト会議または全参加者同意済みのテスト専用です。診断結果もGitHubへ貼り付けません。詳細は[Teams caption source capability specification](docs/specs/teams-caption-source.md)を参照してください。
+
 ローカル文字起こしは[local transcription specification](docs/specs/local-transcription.md)に従います。会議前に`powershell -ExecutionPolicy Bypass -File scripts/setup-whisper-model.ps1`でchecksum検証済みmodelを導入し、native workerをbuildしてから`node companion/local-transcription-host.mjs`を起動します。companionが表示する一度限りの`#techmap-launch=...`付きURLを同じWindows userのbrowserで開いてください。fragmentはHTTPへ送られず、UIがmemoryへ取り込んだ直後にaddress barから消去します。公開URLではマイク入力は無効で、合成デモだけが動作します。
 
 会議dataの同意、暗号化保存、保持、削除、redaction、OpenAI保持条件は[privacy boundary](docs/specs/privacy-boundary.md)に従います。API keyは`powershell -ExecutionPolicy Bypass -File scripts/setup-openai-key.ps1`の非表示promptからWindows Credential Managerへ保存します。keyを`.env`、browser、command line、Issue、PR、logへ入れないでください。
