@@ -23,7 +23,7 @@ TechMap Liveは、技術ディスカッションをリアルタイムに文字�
 
 ## Local development
 
-Node.js 22.13以降とpnpmを使用します。
+Node.js 22.18以降とpnpmを使用します。
 
 ```powershell
 cd app

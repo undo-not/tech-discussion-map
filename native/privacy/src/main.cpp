@@ -251,10 +251,13 @@ bool SendResponsesRequest(const std::vector<std::uint8_t>& input, std::vector<st
     SecureZeroMemory(rawCredential->CredentialBlob, rawCredential->CredentialBlobSize);
     if (!ValidCredential(key)) { if (!key.empty()) SecureZeroMemory(key.data(), key.size()); return false; }
 
-    std::wstring authorization = L"Authorization: Bearer ";
-    authorization.reserve(authorization.size() + key.size() + 2);
+    constexpr std::wstring_view authorizationPrefix = L"Authorization: Bearer ";
+    constexpr std::wstring_view authorizationSuffix = L"\r\nContent-Type: application/json";
+    std::wstring authorization;
+    authorization.reserve(authorizationPrefix.size() + key.size() + authorizationSuffix.size());
+    authorization.append(authorizationPrefix);
     for (const std::uint8_t character : key) authorization.push_back(static_cast<wchar_t>(character));
-    authorization += L"\r\nContent-Type: application/json";
+    authorization.append(authorizationSuffix);
 
     UniqueWinHttp session(WinHttpOpen(L"TechMapLive/0.1", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
     bool succeeded = session != nullptr;
@@ -267,6 +270,10 @@ bool SendResponsesRequest(const std::vector<std::uint8_t>& input, std::vector<st
     succeeded = succeeded && connection != nullptr;
     UniqueWinHttp request(succeeded ? WinHttpOpenRequest(connection.get(), L"POST", L"/v1/responses", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr);
     succeeded = succeeded && request != nullptr;
+    if (succeeded) {
+        DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        succeeded = WinHttpSetOption(request.get(), WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy)) != FALSE;
+    }
     if (succeeded) {
         succeeded = WinHttpSendRequest(request.get(), authorization.c_str(), static_cast<DWORD>(authorization.size()),
             const_cast<std::uint8_t*>(input.data()), static_cast<DWORD>(input.size()), static_cast<DWORD>(input.size()), 0) != FALSE &&

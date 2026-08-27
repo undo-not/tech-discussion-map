@@ -126,6 +126,7 @@ test('native Responses transport is fixed, direct, bounded, and keeps credential
   assert.match(source, /WinHttpConnect\(session\.get\(\), L"api\.openai\.com"/);
   assert.match(source, /WinHttpOpenRequest\(connection\.get\(\), L"POST", L"\/v1\/responses"/);
   assert.match(source, /WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2/);
+  assert.match(source, /WINHTTP_OPTION_REDIRECT_POLICY_NEVER/);
   assert.doesNotMatch(source, /WINHTTP_ACCESS_TYPE_(?:DEFAULT_PROXY|AUTOMATIC_PROXY)/);
   assert.doesNotMatch(source, /WINHTTP_OPTION_SECURITY_FLAGS/);
   assert.doesNotMatch(source, /WriteAll\(key\.data|WriteAll\(authorization\.data/);

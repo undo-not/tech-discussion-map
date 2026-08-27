@@ -10,7 +10,7 @@ The closed operation set is `add`, `update`, `merge`, `retract`, and `link`. Mod
 
 ## Prompt and model boundary
 
-The prompt defines the outcome, constraints, success conditions, and output format once each. Transcript content is untrusted data, not an instruction. The output uses Responses `text.format` with a strict JSON Schema; every object sets `additionalProperties: false`. TypeScript validation remains authoritative because schema support does not replace length, ID, reference, provenance, atomicity, or concurrency checks.
+The prompt defines the outcome, constraints, success conditions, and output format once each. Transcript content is untrusted data, not an instruction. The output uses Responses `text.format` with a strict JSON Schema; every object sets `additionalProperties: false`. The schema uses the documented Structured Outputs subset: string lengths and ID alphabets are encoded with supported `pattern` constraints, while number and array bounds use their supported keywords. TypeScript validation remains authoritative because schema support does not replace whitespace-only rejection, duplicate-array rejection, reference, provenance, atomicity, or concurrency checks.
 
 The outbound input is constructed from at most eight locally redacted final utterances and at most 40 active state projections. The combined projection is redacted again, preventing a label derived from an earlier window from bypassing current redaction. No raw audio, participant metadata, file, tool, conversation, previous response ID, background task, or telemetry field is accepted.
 
@@ -18,7 +18,7 @@ The default analyzer is deterministic local mock. OpenAI analysis runs only when
 
 ## Native transport
 
-The browser sends a policy-validated request to the authenticated loopback companion. The native privacy helper reads `TechMapLive/OpenAIApiKey` from Windows Credential Manager and performs the HTTPS POST itself; the key does not enter the browser or Node process. The destination is compiled as `api.openai.com:443/v1/responses`, TLS certificate validation remains enabled, TLS 1.2 is required, request and response sizes are bounded, and browser, child-process, and network timeouts are finite. Analysis is limited to six calls per bearer and twelve calls globally per companion process per minute, so obtaining new bearers cannot bypass the process-wide cap.
+The browser sends a policy-validated request to the authenticated loopback companion. The native privacy helper reads `TechMapLive/OpenAIApiKey` from Windows Credential Manager and performs the HTTPS POST itself; the key does not enter the browser or Node process. The destination is compiled as `api.openai.com:443/v1/responses`, redirects are disabled, TLS certificate validation remains enabled, TLS 1.2 is required, request and response sizes are bounded, and browser, child-process, and network timeouts are finite. After a complete request passes local policy and schema validation, its rate-limit slot is reserved synchronously before the native request begins. Analysis is limited to six validated calls per bearer and twelve globally per companion process per minute, including concurrent requests, so obtaining new bearers cannot bypass the process-wide cap.
 
 An encrypted session written by the immediately preceding MVP slice may contain the exact legacy placeholder `analysis: []`. It migrates in memory to an empty versioned state when read and is written in current form on the next save. Any non-empty or differently shaped legacy analysis value fails closed.
 

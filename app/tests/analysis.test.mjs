@@ -104,9 +104,9 @@ test('applied delta audit log is bounded while revision stays monotonic', () => 
 test('structured schema mirrors runtime add and scalar bounds', () => {
   const add = analysisOutputJsonSchema.properties.operations.items.anyOf[0].properties;
   assert.deepEqual(add.status.enum, ['proposed', 'open', 'blocked']);
-  assert.equal(add.tempId.maxLength, 52);
-  assert.equal(add.title.maxLength, 160);
-  assert.equal(add.detail.maxLength, 600);
+  assert.equal(add.tempId.pattern, '^[a-zA-Z0-9_-]{1,52}$');
+  assert.equal(add.title.pattern, '^[^\\u0000]{1,160}$');
+  assert.equal(add.detail.pattern, '^[^\\u0000]{1,600}$');
   assert.equal(add.confidence.minimum, 0);
   assert.equal(add.confidence.maximum, 1);
 });

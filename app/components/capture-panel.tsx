@@ -10,7 +10,7 @@ import { LocalCompanionTranscriptionClient } from '@/adapters/transcription/loca
 import { createSyntheticTranscription } from '@/adapters/transcription/synthetic-transcription.ts';
 import { createConsentRecord, type ConsentRecord } from '@/domain/privacy/consent.ts';
 import { createMinimalUtteranceWindow } from '@/domain/privacy/redaction.ts';
-import { applyAnalysisDelta, emptyAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
+import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
 import { createRedactedAnalysisInput } from '@/domain/analysis/prompt.ts';
 import { transitionTranscriptionSession, type TranscriptionSessionEvent, type TranscriptionSessionState } from '@/domain/transcription/session.ts';
 import { applyTranscriptEvent, emptyTranscriptState, type TranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
@@ -139,6 +139,7 @@ export function CapturePanel() {
     analysisChain.current = analysisChain.current.then(async () => {
       if (generation !== analysisGenerationRef.current) return;
       if (requestedMode === 'openai') {
+        if (demoModeRef.current) { setAnalysisStatus('合成デモはlocal mock専用です。外部送信は行いません。'); return; }
         if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current || !privacyStatusRef.current?.credentialConfigured) {
           setAnalysisStatus('OpenAI分析gateが閉じているためlocal stateを変更せず、mockを利用できます。');
           return;
@@ -296,7 +297,7 @@ export function CapturePanel() {
       setSaveLocally(false);
     }
     setMessage(localDeleteVerified
-      ? '現在sessionのmemoryと暗号化local copyを削除しました。OpenAIへ送信済みのcopyはまだありません。'
+      ? '現在sessionのmemoryと暗号化local copyを削除しました。OpenAIへ送信済みのcopyがある場合、このlocal削除では削除されません。'
       : 'memory内のsessionは破棄しましたが、暗号化local copyの削除を確認できません。privacy helperを復旧して再試行してください。');
     void refreshPrivacyStatus(false);
     return localDeleteVerified;
@@ -329,10 +330,11 @@ export function CapturePanel() {
       const value = await (await connectPrivacy()).load(id);
       let state = emptyTranscriptState;
       for (const utterance of value.transcript) state = applyTranscriptEvent(state, utterance);
+      const validatedAnalysis = validateAnalysisState(value.analysis, state.utterances);
       analysisGenerationRef.current += 1;
       demoModeRef.current = false;
       transcriptRef.current = state; setTranscript(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
-      analysisStateRef.current = value.analysis; setAnalysisState(value.analysis);
+      analysisStateRef.current = validatedAnalysis; setAnalysisState(validatedAnalysis);
       persistedSessionRef.current = true;
       persistenceMayExistRef.current = true;
       sessionWriteBlockedRef.current = false;
@@ -382,12 +384,12 @@ export function CapturePanel() {
       </div>
       <div className="mx-auto mt-2 grid max-w-[1600px] gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs lg:grid-cols-[auto_1fr]">
         <div className="flex flex-wrap items-center gap-2">
-          <label>分析mode <select value={analysisMode} onChange={(event) => { const mode = event.target.value as 'mock' | 'openai'; analysisModeRef.current = mode; setAnalysisMode(mode); }} className="ml-1 rounded border px-2 py-1"><option value="mock">local deterministic mock</option><option value="openai" disabled={!externalAnalysisAllowed || !dataControlsAttested || !privacyStatus?.credentialConfigured}>OpenAI gpt-5-mini</option></select></label>
+          <label>分析mode <select value={analysisMode} onChange={(event) => { const mode = event.target.value as 'mock' | 'openai'; analysisModeRef.current = mode; setAnalysisMode(mode); }} className="ml-1 rounded border px-2 py-1"><option value="mock">local deterministic mock</option><option value="openai" disabled={inputMode === 'synthetic' || !externalAnalysisAllowed || !dataControlsAttested || !privacyStatus?.credentialConfigured}>OpenAI gpt-5-mini</option></select></label>
           <button disabled={!transcript.utterances.some((item) => item.phase === 'final')} onClick={() => scheduleAnalysis(transcriptRef.current, analysisMode, inputMode !== 'synthetic')} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">分析を更新</button>
           <span>{analysisStatus}</span>
         </div>
         <div aria-live="polite" className="flex min-w-0 flex-wrap gap-2">
-          {analysisState.items.filter((item) => item.status !== 'withdrawn').slice(-4).map((item) => <span key={item.id} className="rounded border border-[#d6ded8] bg-white px-2 py-1"><b>{item.kind} · {item.provenance === 'ai-suggested' ? 'AI提案' : '人が確認'}</b> · {item.title} <small>{item.status} · 確信度 {Math.round(item.confidence * 100)}% · 根拠 {item.evidenceUtteranceIds.join(', ')}</small></span>)}
+          {analysisState.items.filter((item) => item.status !== 'withdrawn').slice(-4).map((item) => <span key={item.id} className="rounded border border-[#d6ded8] bg-white px-2 py-1"><b>{item.kind} · {item.provenance === 'ai-suggested' ? 'AI提案' : item.provenance === 'human-confirmed' ? '人が確認' : '人が編集'}</b> · {item.title} <small>{item.status} · 確信度 {Math.round(item.confidence * 100)}% · 根拠 {item.evidenceUtteranceIds.join(', ')}</small></span>)}
           {analysisState.items.length === 0 && <span className="text-[#65736e]">分析itemはまだありません。</span>}
         </div>
       </div>

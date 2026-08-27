@@ -1,7 +1,7 @@
-const safeId = { type: 'string', minLength: 1, maxLength: 80, pattern: '^[a-zA-Z0-9_-]+$' } as const;
+const safeId = { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,80}$' } as const;
 const evidenceIds = { type: 'array', items: safeId, minItems: 1, maxItems: 16 } as const;
-const title = { type: 'string', minLength: 1, maxLength: 160 } as const;
-const detail = { type: 'string', minLength: 1, maxLength: 600 } as const;
+const title = { type: 'string', pattern: '^[^\\u0000]{1,160}$' } as const;
+const detail = { type: 'string', pattern: '^[^\\u0000]{1,600}$' } as const;
 const optionalTitle = { anyOf: [title, { type: 'null' }] } as const;
 const optionalDetail = { anyOf: [detail, { type: 'null' }] } as const;
 const optionalStatus = { anyOf: [{ type: 'string', enum: ['proposed', 'open', 'confirmed', 'blocked', 'done', 'superseded', 'withdrawn'] }, { type: 'null' }] } as const;
@@ -10,7 +10,7 @@ const addOperation = {
   type: 'object', additionalProperties: false,
   required: ['op', 'tempId', 'kind', 'title', 'detail', 'status', 'confidence', 'evidenceUtteranceIds'],
   properties: {
-    op: { type: 'string', const: 'add' }, tempId: { ...safeId, maxLength: 52 },
+    op: { type: 'string', const: 'add' }, tempId: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,52}$' },
     kind: { type: 'string', enum: ['topic', 'claim', 'question', 'decision', 'action', 'dependency', 'risk'] },
     title, detail,
     status: { type: 'string', enum: ['proposed', 'open', 'blocked'] },
@@ -42,7 +42,7 @@ const mergeOperation = {
 const retractOperation = {
   type: 'object', additionalProperties: false,
   required: ['op', 'itemId', 'reason', 'evidenceUtteranceIds'],
-  properties: { op: { type: 'string', const: 'retract' }, itemId: safeId, reason: { type: 'string', minLength: 1, maxLength: 300 }, evidenceUtteranceIds: evidenceIds },
+  properties: { op: { type: 'string', const: 'retract' }, itemId: safeId, reason: { type: 'string', pattern: '^[^\\u0000]{1,300}$' }, evidenceUtteranceIds: evidenceIds },
 } as const;
 
 const linkOperation = {
@@ -68,4 +68,4 @@ export const analysisStructuredOutput = {
   type: 'json_schema', name: 'techmap_analysis_delta_v1', strict: true, schema: analysisOutputJsonSchema,
 } as const;
 
-export const analysisSchemaHash = '2f25ecb75d23e46fdda4bd86d9e04d6dffd24e7c229dc73332ad6b04e4041a43';
+export const analysisSchemaHash = 'c242034d904489c2ef1be1b635be471d8de93a377b1409db854d32e6b828ef42';
