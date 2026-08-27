@@ -25,7 +25,13 @@ type RetentionDays = (typeof retentionOptions)[number];
 type SyntheticSession = ReturnType<typeof createSyntheticTranscription>;
 const subscribeRuntime = () => () => undefined;
 
-export function CapturePanel() {
+export type CapturePanelProps = {
+  analysisState: AnalysisState;
+  onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean }) => void;
+  onTranscriptChange?: (state: TranscriptState) => void;
+};
+
+export function CapturePanel({ analysisState, onAnalysisStateChange, onTranscriptChange }: CapturePanelProps) {
   const localRuntime = useSyncExternalStore(subscribeRuntime, () => isLoopbackRuntime(window.location), () => false);
   const [sessionState, dispatch] = useReducer((state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event), 'idle');
   const [devices, setDevices] = useState<MicrophoneDevice[]>([]);
@@ -37,7 +43,6 @@ export function CapturePanel() {
   const [dataControlsAttested, setDataControlsAttested] = useState(false);
   const [externalAnalysisAllowed, setExternalAnalysisAllowed] = useState(false);
   const [analysisMode, setAnalysisMode] = useState<'mock' | 'openai'>('mock');
-  const [analysisState, setAnalysisState] = useState<AnalysisState>(emptyAnalysisState);
   const [analysisStatus, setAnalysisStatus] = useState('local mockは確定発話ごとに自動更新します。');
   const [openAiInFlight, setOpenAiInFlight] = useState(0);
   const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'synthetic'>('none');
@@ -51,7 +56,7 @@ export function CapturePanel() {
   const openAiAnalyzer = useRef<LocalOpenAiAnalyzer | null>(null);
   const synthetic = useRef<SyntheticSession | null>(null);
   const transcriptRef = useRef<TranscriptState>(emptyTranscriptState);
-  const analysisStateRef = useRef<AnalysisState>(emptyAnalysisState);
+  const analysisStateRef = useRef<AnalysisState>(analysisState);
   const analysisModeRef = useRef<'mock' | 'openai'>('mock');
   const analysisChain = useRef<Promise<void>>(Promise.resolve());
   const analysisDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -71,6 +76,16 @@ export function CapturePanel() {
   const dataControlsAttestedRef = useRef(false);
   const externalAnalysisAllowedRef = useRef(false);
   const demoModeRef = useRef(false);
+
+  const publishAnalysisState = (state: AnalysisState, resetHistory = false) => {
+    analysisStateRef.current = state;
+    onAnalysisStateChange(state, { resetHistory });
+  };
+  const publishTranscriptState = (state: TranscriptState) => {
+    transcriptRef.current = state;
+    setTranscript(state);
+    onTranscriptChange?.(state);
+  };
 
   useEffect(() => { saveLocallyRef.current = saveLocally; }, [saveLocally]);
   useEffect(() => { retentionDaysRef.current = retentionDays; }, [retentionDays]);
@@ -135,6 +150,17 @@ export function CapturePanel() {
     });
   };
 
+  useEffect(() => {
+    if (analysisStateRef.current.revision === analysisState.revision) {
+      analysisStateRef.current = analysisState;
+      return;
+    }
+    analysisStateRef.current = analysisState;
+    persistSnapshot(transcriptRef.current);
+    // persistSnapshot intentionally uses current refs; only controlled state identity is reactive here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisState]);
+
   const scheduleAnalysis = (transcriptState: TranscriptState, requestedMode = analysisModeRef.current, persistResult = true) => {
     const generation = analysisGenerationRef.current;
     analysisChain.current = analysisChain.current.then(async () => {
@@ -155,7 +181,7 @@ export function CapturePanel() {
           if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current) { setAnalysisStatus('分析中に外部送信許可が解除されたため、結果を適用しませんでした。'); return; }
           if (delta.operations.length === 0) { setAnalysisStatus('OpenAI分析: 構造上の変化はありません。'); return; }
           const next = applyAnalysisDelta(analysisStateRef.current, delta, transcriptRef.current.utterances);
-          analysisStateRef.current = next; setAnalysisState(next); if (persistResult) persistSnapshot(transcriptRef.current);
+          publishAnalysisState(next); if (persistResult) persistSnapshot(transcriptRef.current);
           setAnalysisStatus(`OpenAI分析をrevision ${next.revision}へ原子的に適用しました。`);
         } finally { setOpenAiInFlight((value) => Math.max(0, value - 1)); }
         return;
@@ -165,15 +191,20 @@ export function CapturePanel() {
       const delta = analyzeWithDeterministicMock(currentTranscript.utterances, analysisStateRef.current);
       if (delta.operations.length === 0) { setAnalysisStatus('local mock: 構造上の変化はありません。'); return; }
       const next = applyAnalysisDelta(analysisStateRef.current, delta, currentTranscript.utterances);
-      analysisStateRef.current = next; setAnalysisState(next); if (persistResult) persistSnapshot(currentTranscript);
+      publishAnalysisState(next); if (persistResult) persistSnapshot(currentTranscript);
       setAnalysisStatus(`local mockをrevision ${next.revision}へ更新しました。`);
-    }).catch(() => setAnalysisStatus('分析を適用できませんでした。local workspaceは変更せず、mock／手動整理を継続できます。'));
+    }).catch((error: unknown) => {
+      if (error instanceof Error && error.message === 'analysis-stale-revision') {
+        setAnalysisStatus('分析中に手動編集またはundoが行われたため、古い分析結果を破棄しました。「分析を更新」で再実行できます。');
+        return;
+      }
+      setAnalysisStatus('分析を適用できませんでした。local workspaceは変更せず、mock／手動整理を継続できます。');
+    });
   };
 
   const receive = (event: TranscriptUtterance) => {
     const next = applyTranscriptEvent(transcriptRef.current, event);
-    transcriptRef.current = next;
-    setTranscript(next);
+    publishTranscriptState(next);
     if (event.phase === 'final') {
       if (event.source !== 'synthetic') persistSnapshot(next);
       if (event.source !== 'synthetic' && analysisModeRef.current === 'openai') {
@@ -205,10 +236,8 @@ export function CapturePanel() {
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     demoModeRef.current = false;
-    transcriptRef.current = emptyTranscriptState;
-    setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState;
-    setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     consentRef.current = createConsentRecord();
     consentAllowedRef.current = true;
     sessionWriteBlockedRef.current = false;
@@ -262,8 +291,8 @@ export function CapturePanel() {
     persistenceMayExistRef.current = false;
     saveLocallyRef.current = false;
     setSaveLocally(false);
-    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     setMeetingEnded(false);
     analysisModeRef.current = 'mock'; setAnalysisMode('mock');
     synthetic.current?.stop(); synthetic.current = createSyntheticTranscription(receive); synthetic.current.start();
@@ -299,8 +328,8 @@ export function CapturePanel() {
       try { await (await connectPrivacy()).delete(id); localDeleteVerified = true; }
       catch { localDeleteVerified = false; }
     }
-    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     setMeetingEnded(false);
     if (localDeleteVerified) {
       persistedSessionRef.current = false;
@@ -350,8 +379,8 @@ export function CapturePanel() {
       const validatedAnalysis = validateAnalysisState(value.analysis, state.utterances);
       analysisGenerationRef.current += 1;
       demoModeRef.current = false;
-      transcriptRef.current = state; setTranscript(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
-      analysisStateRef.current = validatedAnalysis; setAnalysisState(validatedAnalysis);
+      publishTranscriptState(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
+      publishAnalysisState(validatedAnalysis, true);
       persistedSessionRef.current = true;
       persistenceMayExistRef.current = true;
       sessionWriteBlockedRef.current = false;
