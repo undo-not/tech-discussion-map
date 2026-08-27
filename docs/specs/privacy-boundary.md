@@ -2,7 +2,7 @@
 
 ## Consent and indicators
 
-`consent-confirmed` is a versioned in-memory record containing confirmation time and `all-participants` scope. A local capture start request without this record is rejected before `getUserMedia` or WASAPI opens a device. Revoking confirmation while permission or capture is pending stops capture and deletes the current local session. The application does not infer consent from Teams configuration or captions.
+`consent-confirmed` is a versioned in-memory record containing confirmation time and `all-participants` scope. A local capture start request without this record is rejected before `getUserMedia` or WASAPI opens a device. Revoking confirmation while permission or capture is pending stops capture and deletes the current local session. Consent is rechecked after both device open and companion session creation. The application does not infer consent from Teams configuration or captions.
 
 The UI always renders three independent indicators:
 
@@ -16,7 +16,7 @@ Raw audio has no persistence option. Final transcript, analysis, consent, and se
 
 Session IDs are UUIDs. File names are validated and resolved under the fixed root. Plaintext is limited to 1 MiB, ciphertext to 8 MiB, and the list to 100 sessions. Writes use a unique temporary ciphertext file, flush, and atomic rename. Temporary files contain ciphertext only. Reads validate the complete schema and reject fields named audio, PCM, recording, API key, or authorization.
 
-Persisted retention choices are 1, 7, 30, or 90 days. Expired sessions are swept on privacy-store initialization and explicit refresh. Immediate delete removes the entire encrypted session. An unpersisted session never reaches disk. Local deletion does not delete a separately exported file or an external API copy.
+Persisted retention choices are 1, 7, 30, or 90 days. Expired sessions are swept on privacy-store initialization and explicit refresh. Immediate delete first stops active input, drains pending encrypted writes, removes the entire encrypted session, and prevents that session ID from being persisted again. An unreadable session remains visible as unreadable and can be deleted without decryption. An unpersisted session never reaches disk. Local deletion does not delete a separately exported file or an external API copy. On browser startup, the obsolete `techmap-live-local` IndexedDB from pre-DPAPI builds is deleted without reading its plaintext.
 
 Export requires a user gesture and the browser OS save picker. There is no default export directory or automatic export. Unsupported browsers fail visibly.
 
@@ -26,7 +26,7 @@ The OpenAI API key is stored as generic Windows Credential `TechMapLive/OpenAIAp
 
 ## Redaction and Responses request
 
-The rolling window includes at most eight final utterances and only utterance ID, source, time, and text. Deterministic local rules redact OpenAI-style keys, credential assignments, email, phone, IPv4, and URLs containing query strings. Invalid Unicode, NUL, empty, oversize, or residual secret patterns fail closed. The UI displays the redacted preview and category counts, never a hidden pre-redaction diagnostic log.
+The rolling window includes at most eight final utterances and only utterance ID, source, time, and text. Deterministic local rules apply NFKC normalization and redact OpenAI-style keys, credential assignments, email, phone, IPv4, and URLs containing query strings. They are heuristic and do not claim to remove every personal or organization name. Invalid Unicode, NUL, empty, oversize, or residual secret patterns fail closed. The UI displays the redacted preview and category counts, never a hidden pre-redaction diagnostic log.
 
 Only `createPrivacySafeResponsesRequest` can construct the future analyzer request. The allowed top-level keys are exactly `model`, `store`, and `input`; `store` is literal `false`. The destination is exactly `https://api.openai.com/v1/responses`. Automatic retry count is zero and timeout is 20 seconds. Background mode, conversations, previous response IDs, tools, files, remote MCP, web search, analytics, telemetry, error tracking, remote font, CDN, and source-map upload are forbidden in real-meeting runtime.
 
@@ -37,8 +37,8 @@ Before external analysis can be enabled, the operator confirms the selected API 
 | Threat | Control | Evidence |
 |---|---|---|
 | Capture before/revoked consent | consent record required before device open; revoke stops pending/active capture | UI state tests and manual synthetic test |
-| Browser or hostile site reaches local host | loopback bind, exact Origin, custom bearer header, bounded requests | companion network test |
-| Another Windows user reads session | protected current-user-only DACL + DPAPI CurrentUser | native Windows self-test |
+| Browser, hostile site, or another local Windows user reaches local host | loopback bind, exact Host and Origin, ephemeral console-delivered launch secret, short-lived bearer, bounded requests | companion network test |
+| Another Windows user reads session files | protected current-user-only DACL + DPAPI CurrentUser | native Windows self-test |
 | Plaintext or raw audio reaches disk | typed session schema, forbidden-field scan, DPAPI-only writer, no audio store | privacy-store test and source scan |
 | Secret reaches OpenAI or logs | deterministic redaction, residual-secret verifier, no request/content log | redaction tests |
 | OpenAI retains application state | `store:false`, no conversations/background/files/tools | exact-key request test |
@@ -47,3 +47,5 @@ Before external analysis can be enabled, the operator confirms the selected API 
 | Retention outlives user choice | expiry sweep and whole-session delete | lifecycle test |
 
 Tests and CI use only synthetic content. Real meeting verification requires participant consent and a separate manual checklist that records no content.
+
+The boundary does not defend against malware or another process already running as the same Windows user: such a process can inspect that user's UI or invoke that user's DPAPI and Credential Manager context. The launch secret blocks unauthenticated loopback callers and other local users; it is not a same-user sandbox.

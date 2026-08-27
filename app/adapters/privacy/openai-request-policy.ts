@@ -1,4 +1,4 @@
-import type { RedactedText } from '../../domain/privacy/redaction.ts';
+import { assertRedactedTextAtRuntime, type RedactedText } from '../../domain/privacy/redaction.ts';
 
 export const openAiResponsesEndpoint = 'https://api.openai.com/v1/responses';
 export const openAiTimeoutMilliseconds = 20_000;
@@ -12,6 +12,7 @@ export type PrivacySafeResponsesRequest = Readonly<{
 
 export function createPrivacySafeResponsesRequest(model: string, text: RedactedText): PrivacySafeResponsesRequest {
   if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(model)) throw new Error('Invalid OpenAI model identifier');
+  assertRedactedTextAtRuntime(text);
   return Object.freeze({
     model,
     store: false as const,
@@ -25,6 +26,13 @@ export function assertPrivacySafeResponsesRequest(value: unknown): asserts value
   }
   const keys = Object.keys(value).sort();
   if (keys.join(',') !== 'input,model,store') throw new Error('Responses request contains a forbidden field');
+  const request = value as Record<string, unknown>;
+  if (typeof request.model !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(request.model) || !Array.isArray(request.input) || request.input.length !== 1) throw new Error('Responses request schema is invalid');
+  const message = request.input[0] as Record<string, unknown>;
+  if (typeof message !== 'object' || message === null || Object.keys(message).sort().join(',') !== 'content,role' || message.role !== 'user' || !Array.isArray(message.content) || message.content.length !== 1) throw new Error('Responses request schema is invalid');
+  const content = message.content[0] as Record<string, unknown>;
+  if (typeof content !== 'object' || content === null || Object.keys(content).sort().join(',') !== 'text,type' || content.type !== 'input_text') throw new Error('Responses request schema is invalid');
+  assertRedactedTextAtRuntime(content.text);
   const serialized = JSON.stringify(value);
   if (serialized.length > 12_000) throw new Error('Responses request exceeds the minimum-context boundary');
 }

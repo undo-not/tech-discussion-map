@@ -167,7 +167,7 @@ bool ProvisionRoot(const std::wstring& root) {
     const std::size_t separator = root.find_last_of(L"\\/");
     if (separator == std::wstring::npos) return false;
     const std::wstring parent = root.substr(0, separator);
-    return CreateSecureDirectory(parent, sid) && CreateSecureDirectory(root, sid) && VerifyUserOnlyAcl(root, sid);
+    return CreateSecureDirectory(parent, sid) && VerifyUserOnlyAcl(parent, sid) && CreateSecureDirectory(root, sid) && VerifyUserOnlyAcl(root, sid);
 }
 
 bool Protect(const std::vector<std::uint8_t>& input, std::vector<std::uint8_t>& output) {
@@ -263,7 +263,7 @@ int wmain(int argc, wchar_t** argv) {
         const bool succeeded = command == L"seal" ? Protect(input, output) : Unprotect(input, output);
         SecureZeroMemory(input.data(), input.size());
         const bool written = succeeded && output.size() <= MaximumSessionBytes && WriteAll(output.data(), output.size());
-        SecureZeroMemory(output.data(), output.size());
+        if (!output.empty()) SecureZeroMemory(output.data(), output.size());
         return written ? 0 : 5;
     }
     if (command == L"store-key") {

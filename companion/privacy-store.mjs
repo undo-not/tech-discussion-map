@@ -121,10 +121,15 @@ export function createPrivacyStore(options = {}) {
     if (names.length > maximumStoredSessions) throw new Error('privacy-session-limit');
     const metadata = [];
     for (const name of names) {
-      const session = await load(name.slice(0, -5));
-      metadata.push({ id: session.id, updatedAt: session.updatedAt, expiresAt: session.expiresAt, transcriptCount: session.transcript.length, analysisCount: session.analysis.length });
+      const id = name.slice(0, -5);
+      try {
+        const session = await load(id);
+        metadata.push({ id: session.id, updatedAt: session.updatedAt, expiresAt: session.expiresAt, transcriptCount: session.transcript.length, analysisCount: session.analysis.length, unreadable: false });
+      } catch {
+        metadata.push({ id, updatedAt: null, expiresAt: null, transcriptCount: 0, analysisCount: 0, unreadable: true });
+      }
     }
-    return metadata.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return metadata.sort((left, right) => (right.updatedAt ?? '').localeCompare(left.updatedAt ?? ''));
   }
 
   async function remove(id) {
@@ -134,7 +139,7 @@ export function createPrivacyStore(options = {}) {
 
   async function sweep(now = new Date()) {
     const sessions = await list();
-    const expired = sessions.filter((session) => Date.parse(session.expiresAt) <= now.getTime());
+    const expired = sessions.filter((session) => session.expiresAt !== null && Date.parse(session.expiresAt) <= now.getTime());
     for (const session of expired) await remove(session.id);
     return expired.map((session) => session.id);
   }

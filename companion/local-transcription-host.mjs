@@ -107,6 +107,8 @@ export function createCompanionServer(options = {}) {
   const workerPath = resolve(options.workerPath ?? environment.TECHMAP_TRANSCRIBER_PATH ?? defaults.workerPath);
   const spawnWorker = options.spawnWorker ?? ((args) => spawn(workerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
   const privacyStore = options.privacyStore ?? createPrivacyStore({ environment });
+  const launchSecret = options.launchSecret ?? randomBytes(32).toString('hex');
+  if (!/^[a-f0-9]{64}$/.test(launchSecret)) throw new Error('invalid-launch-secret');
   const tokens = new Map();
   const sessions = new Map();
 
@@ -132,7 +134,10 @@ export function createCompanionServer(options = {}) {
     const url = new URL(request.url ?? '/', `http://${loopbackHost}`);
     if (request.method === 'POST' && url.pathname === '/v1/bootstrap') {
       const body = await readBody(request, maximumJsonBytes).catch(() => null);
-      if (!body || request.headers['content-type'] !== 'application/json') return sendJson(response, 400, { error: 'invalid-request' }, origin);
+      let configuration;
+      try { configuration = body ? JSON.parse(body.toString('utf8')) : null; }
+      catch { configuration = null; }
+      if (!configuration || request.headers['content-type'] !== 'application/json' || Object.keys(configuration).length !== 1 || !tokenMatches(launchSecret, configuration.launchSecret)) return sendJson(response, 401, { error: 'launch-secret-required' }, origin);
       for (const [token, entry] of tokens) if (entry.expiresAt < Date.now()) tokens.delete(token);
       while (tokens.size >= 32) tokens.delete(tokens.keys().next().value);
       const token = randomBytes(32).toString('hex');
@@ -260,9 +265,10 @@ export function createCompanionServer(options = {}) {
 }
 
 export function listen(options = {}) {
-  const server = createCompanionServer(options);
+  const launchSecret = randomBytes(32).toString('hex');
+  const server = createCompanionServer({ ...options, launchSecret });
   const port = options.port ?? defaultPort;
-  server.listen(port, loopbackHost, () => process.stdout.write(`TechMap local transcription ready on http://${loopbackHost}:${port}\n`));
+  server.listen(port, loopbackHost, () => process.stdout.write(`TechMap local companion ready. Open http://${loopbackHost}:3000/#techmap-launch=${launchSecret}\n`));
   return server;
 }
 

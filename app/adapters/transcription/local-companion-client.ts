@@ -1,4 +1,5 @@
 import { parseTranscriptUtterance, type TranscriptUtterance, type UtteranceSource } from '../../domain/transcription/utterance.ts';
+import { consumeLocalLaunchSecret } from '../companion/launch-secret.ts';
 
 const companionOrigin = 'http://127.0.0.1:43117';
 const maximumAudioChunkBytes = 128 * 1024;
@@ -38,7 +39,7 @@ export class LocalCompanionTranscriptionClient {
     const bootstrap = await readJson(await fetch(companionUrl('/v1/bootstrap'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify({ launchSecret: consumeLocalLaunchSecret() }),
       cache: 'no-store',
     })) as { token?: unknown };
     if (typeof bootstrap.token !== 'string' || !/^[a-f0-9]{64}$/.test(bootstrap.token)) {

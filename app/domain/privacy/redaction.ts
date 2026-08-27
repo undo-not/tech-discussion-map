@@ -40,7 +40,7 @@ export function redactText(input: string): RedactionResult {
   if (input.length === 0 || input.length > maximumInputCharacters) return { ok: false, reason: 'redaction-input-out-of-bounds' };
   if (hasUnpairedSurrogate(input) || input.includes('\0')) return { ok: false, reason: 'redaction-input-invalid' };
   const summary = emptySummary();
-  let output = input.normalize('NFC');
+  let output = input.normalize('NFKC');
   for (const rule of rules) {
     output = output.replace(rule.pattern, () => { summary[rule.category] += 1; return rule.replacement; });
   }
@@ -49,6 +49,15 @@ export function redactText(input: string): RedactionResult {
     return { ok: false, reason: 'redaction-verification-failed' };
   }
   return { ok: true, text: output as RedactedText, summary };
+}
+
+export function assertRedactedTextAtRuntime(value: unknown): asserts value is RedactedText {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maximumOutputCharacters || value.includes('\0') || hasUnpairedSurrogate(value) || forbiddenAfterRedaction.test(value)) {
+    throw new Error('redacted-text-runtime-verification-failed');
+  }
+  for (const rule of rules) {
+    if (new RegExp(rule.pattern.source, rule.pattern.flags).test(value)) throw new Error('redacted-text-runtime-verification-failed');
+  }
 }
 
 export function createMinimalUtteranceWindow(utterances: TranscriptUtterance[], maximumItems = 8): RedactionResult {

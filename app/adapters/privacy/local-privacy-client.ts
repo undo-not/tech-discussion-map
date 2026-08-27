@@ -1,5 +1,6 @@
 import type { ConsentRecord } from '../../domain/privacy/consent.ts';
 import type { TranscriptUtterance } from '../../domain/transcription/utterance.ts';
+import { consumeLocalLaunchSecret } from '../companion/launch-secret.ts';
 
 const privacyCompanionOrigin = 'http://127.0.0.1:43117';
 const sessionIdPattern = /^[a-f0-9-]{36}$/;
@@ -16,7 +17,7 @@ export type StoredSession = {
   state: Record<string, unknown>;
 };
 
-export type StoredSessionMetadata = Pick<StoredSession, 'id' | 'updatedAt' | 'expiresAt'> & { transcriptCount: number; analysisCount: number };
+export type StoredSessionMetadata = { id: string; updatedAt: string | null; expiresAt: string | null; transcriptCount: number; analysisCount: number; unreadable: boolean };
 
 function privacyUrl(path: string): URL {
   const url = new URL(path, privacyCompanionOrigin);
@@ -34,7 +35,7 @@ export class LocalPrivacyClient {
 
   async connect(): Promise<void> {
     const value = await readJson(await fetch(privacyUrl('/v1/bootstrap'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store', credentials: 'omit',
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ launchSecret: consumeLocalLaunchSecret() }), cache: 'no-store', credentials: 'omit',
     })) as { token?: unknown };
     if (typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new Error('privacy-invalid-bootstrap');
     this.#token = value.token;
@@ -55,6 +56,12 @@ export class LocalPrivacyClient {
     const value = await readJson(await this.#request('/v1/privacy/sessions', { method: 'GET', cache: 'no-store' })) as { sessions?: unknown };
     if (!Array.isArray(value.sessions)) throw new Error('privacy-invalid-session-list');
     return value.sessions as StoredSessionMetadata[];
+  }
+
+  async sweep(): Promise<string[]> {
+    const value = await readJson(await this.#request('/v1/privacy/sweep', { method: 'POST' })) as { deleted?: unknown };
+    if (!Array.isArray(value.deleted) || value.deleted.some((id) => typeof id !== 'string' || !sessionIdPattern.test(id))) throw new Error('privacy-invalid-sweep-result');
+    return value.deleted;
   }
 
   async load(id: string): Promise<StoredSession> {

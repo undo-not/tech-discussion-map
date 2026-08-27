@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -41,6 +41,9 @@ test('redaction removes synthetic secrets and creates a minimum final-only windo
   assert.equal(result.summary.email, 1);
   assert.equal(result.summary.credential, 1);
   assert.equal(result.summary['api-key'], 1);
+  const fullWidth = redactText('連絡先 ｕｓｅｒ＠ｅｘａｍｐｌｅ．ｔｅｓｔ 電話 ０９０－１２３４－５６７８');
+  assert.equal(fullWidth.ok, true);
+  assert.doesNotMatch(fullWidth.text, /user@example|090/);
 
   const window = createMinimalUtteranceWindow([
     { ...syntheticUtterance('partial-ignored', '含めない'), phase: 'partial' },
@@ -59,6 +62,7 @@ test('Responses request factory forces stateless minimum-text policy', () => {
   assert.deepEqual(Object.keys(request).sort(), ['input', 'model', 'store']);
   assertPrivacySafeResponsesRequest(request);
   assert.throws(() => assertPrivacySafeResponsesRequest({ ...request, background: true }), /forbidden field/);
+  assert.throws(() => assertPrivacySafeResponsesRequest({ model: request.model, store: false, input: [{ role: 'user', content: [{ type: 'input_audio', text: 'unsafe@example.test' }] }] }), /schema is invalid/);
   assert.equal(assertAllowedRuntimeEgress('https://api.openai.com/v1/responses').hostname, 'api.openai.com');
   assert.throws(() => assertAllowedRuntimeEgress('https://example.com/v1/responses'), /not allowed/);
   assert.equal(openAiAutomaticRetryCount, 0);
@@ -100,8 +104,12 @@ test('privacy store writes only sealed session data and supports retention/delet
   assert.doesNotMatch(ciphertext.toString('utf8'), /公開用の合成発話/);
   assert.deepEqual((await store.load(session.id)).transcript, session.transcript);
   assert.equal((await store.list())[0].transcriptCount, 1);
+  const corruptId = '22222222-2222-4222-8222-222222222222';
+  await writeFile(join(root, `${corruptId}.tmps`), xor(Buffer.from('not-json')));
+  assert.equal((await store.list()).find((item) => item.id === corruptId).unreadable, true);
   assert.deepEqual(await store.sweep(new Date('2026-08-29T00:00:00.000Z')), [session.id]);
   assert.equal(await store.remove(session.id), false);
+  assert.equal(await store.remove(corruptId), true);
   assert.throws(() => validateStoredSession({ ...session, audio: 'forbidden' }), /invalid-session/);
   assert.throws(() => validateStoredSession({ ...session, analysis: [{ payload: { samples: [1, 2, 3] } }] }), /forbidden-session-data/);
   assert.throws(() => validateStoredSession({ ...session, consent: { ...session.consent, operator: 'extra' } }), /invalid-session-consent/);
