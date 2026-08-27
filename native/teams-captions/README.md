@@ -1,6 +1,6 @@
 # Teams caption UI Automation probe
 
-Issue #17のWindows専用read-only capability probeです。TeamsのウィンドウとUI Automation control種別を数えますが、`probe`は要素名、表示文字、window title、PIDを読み出し・表示しません。
+Issue #17のWindows専用read-only capability probeです。Teamsのvisible top-level windowからUI Automation rootを取得できるか確認しますが、`probe`はsubtreeを走査せず、要素名、表示文字、window title、PIDを読み出し・表示しません。
 
 ```powershell
 cmake -S native/teams-captions -B native/teams-captions/build -A x64

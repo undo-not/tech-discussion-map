@@ -2,14 +2,13 @@
 
 ## Probe modes
 
-`techmap-captions probe`はTeams processとvisible top-level windowを数え、UI Automation control treeをcontent-freeに走査する。次の情報だけをJSONで返す。
+`techmap-captions probe`はTeams processとvisible top-level windowを数え、各top-level windowからUI Automation rootを取得できるかだけをcontent-freeに確認する。次の情報だけをJSONで返す。
 
 - fixed contract version and state;
 - process/window/UIA root counts;
-- aggregate control-type counts and truncation flag;
 - `contentInspected: false`, `contentEmitted: false`, `contentPersisted: false`.
 
-window title、PID、Automation `Name`、`Value`、`TextPattern`、座標、文字列hashは返さない。最大20,000要素・深さ64で走査を打ち切る。`candidate-found`は字幕取得成功ではなく、TeamsのUIA provider候補が見つかったことだけを意味する。
+window title、PID、Automation `Name`、`Value`、`TextPattern`、座標、文字列hashは返さず、UIA subtreeを走査しない。`candidate-found`は字幕取得成功ではなく、TeamsのUIA root候補が見つかったことだけを意味する。companionへ接続する際はhelper process自体へ5秒のtimeoutを設け、providerが応答しない場合はhelperを終了して`degraded-caption-missing`とする。
 
 `probe-at-cursor --consent-confirmed`は利用者が現在指している1要素だけを調べる。対象process imageが`ms-teams.exe`でない場合は失敗する。文字列はmemory内で有無と上限内かを確認して消去し、内容、正確な長さ、hashをstdout/stderr/fileへ出さない。これは本人のみの合成テスト会議または全参加者が同意したテストでのみ実行する。
 

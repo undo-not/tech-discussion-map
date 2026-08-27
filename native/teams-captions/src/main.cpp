@@ -18,8 +18,6 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 constexpr std::wstring_view TeamsExecutableName = L"ms-teams.exe";
-constexpr std::size_t MaximumElements = 20'000;
-constexpr int MaximumDepth = 64;
 constexpr int MaximumSensitiveCharacters = 8'000;
 
 class UniqueHandle final {
@@ -81,38 +79,6 @@ BOOL CALLBACK CollectTeamsWindows(HWND window, LPARAM parameter) {
     return TRUE;
 }
 
-struct ElementStats final {
-    std::size_t total{0};
-    std::size_t text{0};
-    std::size_t document{0};
-    std::size_t edit{0};
-    bool truncated{false};
-};
-
-void CountElementTree(IUIAutomationTreeWalker* walker, IUIAutomationElement* element, int depth, ElementStats* stats) {
-    if (element == nullptr || stats->truncated) return;
-    if (stats->total >= MaximumElements || depth > MaximumDepth) {
-        stats->truncated = true;
-        return;
-    }
-    ++stats->total;
-    CONTROLTYPEID controlType = 0;
-    if (SUCCEEDED(element->get_CurrentControlType(&controlType))) {
-        if (controlType == UIA_TextControlTypeId) ++stats->text;
-        if (controlType == UIA_DocumentControlTypeId) ++stats->document;
-        if (controlType == UIA_EditControlTypeId) ++stats->edit;
-    }
-
-    ComPtr<IUIAutomationElement> child;
-    if (FAILED(walker->GetFirstChildElement(element, &child))) return;
-    while (child && !stats->truncated) {
-        CountElementTree(walker, child.Get(), depth + 1, stats);
-        ComPtr<IUIAutomationElement> sibling;
-        if (FAILED(walker->GetNextSiblingElement(child.Get(), &sibling))) break;
-        child = sibling;
-    }
-}
-
 int RunContract() {
     return WriteText(
         "{\"contractVersion\":1,\"commands\":[\"probe\",\"probe-at-cursor\"],"
@@ -125,34 +91,21 @@ int RunProbe(IUIAutomation* automation) {
     WindowContext context{&processIds, &windows};
     EnumWindows(CollectTeamsWindows, reinterpret_cast<LPARAM>(&context));
 
-    ElementStats stats;
     std::size_t roots = 0;
-    ComPtr<IUIAutomationTreeWalker> walker;
-    const HRESULT walkerResult = automation->get_ControlViewWalker(&walker);
-    if (SUCCEEDED(walkerResult)) {
-        for (HWND window : windows) {
-            ComPtr<IUIAutomationElement> root;
-            if (SUCCEEDED(automation->ElementFromHandle(window, &root)) && root) {
-                ++roots;
-                CountElementTree(walker.Get(), root.Get(), 0, &stats);
-            }
-        }
+    for (HWND window : windows) {
+        ComPtr<IUIAutomationElement> root;
+        if (SUCCEEDED(automation->ElementFromHandle(window, &root)) && root) ++roots;
     }
 
     const char* state = processIds.empty() ? "teams-not-found"
         : windows.empty() ? "teams-window-not-found"
-        : FAILED(walkerResult) || roots == 0 ? "uia-unavailable"
+        : roots == 0 ? "uia-unavailable"
         : "candidate-found";
     std::ostringstream json;
     json << "{\"contractVersion\":1,\"state\":\"" << state
          << "\",\"teamsProcessCount\":" << processIds.size()
          << ",\"teamsWindowCount\":" << windows.size()
          << ",\"uiaRootCount\":" << roots
-         << ",\"elementCount\":" << stats.total
-         << ",\"textElementCount\":" << stats.text
-         << ",\"documentElementCount\":" << stats.document
-         << ",\"editElementCount\":" << stats.edit
-         << ",\"scanTruncated\":" << (stats.truncated ? "true" : "false")
          << ",\"contentInspected\":false,\"contentEmitted\":false,\"contentPersisted\":false}\n";
     if (!WriteText(json.str())) return 3;
     return std::string_view(state) == "candidate-found" ? 0 : 2;

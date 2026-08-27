@@ -35,7 +35,7 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 
 Windows音声helperのbuildと非capturing capability checkは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。実会議captureはIssue #6の同意・privacy gateが完成するまで実行しません。
 
-Issue #17ではTeams字幕をWindows UI Automationから取得できるかを安全に検証しています。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、UI Automation controlの集計だけをローカル表示します。字幕本文の取得経路はまだMVPへ接続されていません。
+Issue #17ではTeams字幕をWindows UI Automationから取得できるかを安全に検証しています。`native/teams-captions`の通常probeは表示文字、window title、PIDを読み出さず、Teams top-level windowからUI Automation rootを取得できるかだけをローカル表示します。字幕本文の取得経路はまだMVPへ接続されていません。
 
 ```powershell
 cmake -S native/teams-captions -B native/teams-captions/build -A x64

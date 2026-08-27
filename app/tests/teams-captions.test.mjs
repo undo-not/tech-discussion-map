@@ -6,12 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 const testDirectory = fileURLToPath(new URL('.', import.meta.url));
 
-test('content-free Teams probe never reads or emits accessible text', async () => {
+test('content-free Teams probe checks roots without traversing or reading accessible text', async () => {
   const source = await readFile(resolve(testDirectory, '..', '..', 'native', 'teams-captions', 'src', 'main.cpp'), 'utf8');
   const probe = source.slice(source.indexOf('int RunProbe(IUIAutomation* automation)'), source.indexOf('std::size_t SecureLengthAndFree'));
-  assert.doesNotMatch(probe, /CurrentName|CurrentValue|TextPattern|GetText|GetCursorPos|WindowText/);
+  assert.doesNotMatch(probe, /CurrentName|CurrentValue|TextPattern|GetText|GetCursorPos|WindowText|TreeWalker|FindAll/);
   assert.match(probe, /contentInspected\\\":false/);
-  assert.match(source, /stats->total >= MaximumElements \|\| depth > MaximumDepth/);
+  assert.match(probe, /ElementFromHandle/);
 });
 
 test('cursor probe requires consent, validates Teams process, and emits metadata only', async () => {
