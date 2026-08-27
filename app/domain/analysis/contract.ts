@@ -150,12 +150,16 @@ export function applyAnalysisDelta(state: AnalysisState, candidate: AnalysisDelt
   if (candidate.baseRevision !== state.revision) throw new Error('analysis-stale-revision');
   const parsed = parseAnalyzerOutput({ contractVersion: candidate.contractVersion, baseRevision: candidate.baseRevision, operations: candidate.operations });
   const utteranceIds = new Set(utterances.filter((item) => item.phase === 'final').map((item) => item.id));
+  const withdrawnEvidence = state.items
+    .filter((item) => item.provenance === 'ai-suggested' && item.status === 'withdrawn')
+    .map((item) => new Set(item.evidenceUtteranceIds));
   const next = structuredClone(state);
   const itemById = () => new Map(next.items.map((item) => [item.id, item]));
 
   for (const operation of parsed.operations) {
     if (operation.op === 'add') {
       verifyEvidence(operation.evidenceUtteranceIds, utteranceIds);
+      if (withdrawnEvidence.some((evidence) => operation.evidenceUtteranceIds.every((id) => evidence.has(id)))) throw new Error('analysis-withdrawn-evidence-replay');
       if (next.items.length >= maximumAnalysisItems) throw new Error('analysis-item-limit');
       const id = canonicalId(candidate.deltaId, operation.tempId);
       if (itemById().has(id)) throw new Error('analysis-duplicate-item-id');

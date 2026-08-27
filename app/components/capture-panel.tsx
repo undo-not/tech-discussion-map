@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { LocalOpenAiAnalyzer } from '@/adapters/analysis/local-openai-analyzer.ts';
 import { analyzeWithDeterministicMock } from '@/adapters/analysis/mock-analyzer.ts';
 import { isLoopbackRuntime, listMicrophones, startMicrophoneCapture, type MicrophoneCapture, type MicrophoneDevice } from '@/adapters/audio/browser-microphone.ts';
@@ -15,6 +15,17 @@ import { createMinimalUtteranceWindow } from '@/domain/privacy/redaction.ts';
 import { applyAnalysisDelta, emptyAnalysisState, validateAnalysisState, type AnalysisState } from '@/domain/analysis/contract.ts';
 import { createRedactedAnalysisInput } from '@/domain/analysis/prompt.ts';
 import { transitionTranscriptionSession, type TranscriptionSessionEvent, type TranscriptionSessionState } from '@/domain/transcription/session.ts';
+import {
+  adoptStartedInput,
+  beginInputStart,
+  cancelInputStart,
+  createInputStartGate,
+  finishInputStart,
+  inputAttemptControlsState,
+  inputAttemptOwnsSession,
+  inputStartIsCurrent,
+  releaseInputAttempt,
+} from '@/domain/transcription/input-start-gate.ts';
 import { applyCaptionSourceEvent, emptyCaptionAssemblerState, transitionCaptionSource, type CaptionAssemblerState, type CaptionSourceSessionEvent, type CaptionSourceState } from '@/domain/transcription/caption-source.ts';
 import { applyTranscriptEvent, emptyTranscriptState, type TranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
 
@@ -28,7 +39,14 @@ type RetentionDays = (typeof retentionOptions)[number];
 type SyntheticSession = ReturnType<typeof createSyntheticTranscription>;
 const subscribeRuntime = () => () => undefined;
 
-export function CapturePanel() {
+export type CapturePanelProps = {
+  analysisState: AnalysisState;
+  getAnalysisState: () => AnalysisState;
+  onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean; resetLayout?: boolean }) => void;
+  onTranscriptChange?: (state: TranscriptState) => void;
+};
+
+export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange }: CapturePanelProps) {
   const localRuntime = useSyncExternalStore(subscribeRuntime, () => isLoopbackRuntime(window.location), () => false);
   const [sessionState, dispatch] = useReducer((state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event), 'idle');
   const [devices, setDevices] = useState<MicrophoneDevice[]>([]);
@@ -40,7 +58,6 @@ export function CapturePanel() {
   const [dataControlsAttested, setDataControlsAttested] = useState(false);
   const [externalAnalysisAllowed, setExternalAnalysisAllowed] = useState(false);
   const [analysisMode, setAnalysisMode] = useState<'mock' | 'openai'>('mock');
-  const [analysisState, setAnalysisState] = useState<AnalysisState>(emptyAnalysisState);
   const [analysisStatus, setAnalysisStatus] = useState('local mockは確定発話ごとに自動更新します。');
   const [openAiInFlight, setOpenAiInFlight] = useState(0);
   const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'teams-caption' | 'synthetic'>('none');
@@ -57,7 +74,7 @@ export function CapturePanel() {
   const openAiAnalyzer = useRef<LocalOpenAiAnalyzer | null>(null);
   const synthetic = useRef<SyntheticSession | null>(null);
   const transcriptRef = useRef<TranscriptState>(emptyTranscriptState);
-  const analysisStateRef = useRef<AnalysisState>(emptyAnalysisState);
+  const analysisStateRef = useRef<AnalysisState>(analysisState);
   const analysisModeRef = useRef<'mock' | 'openai'>('mock');
   const analysisChain = useRef<Promise<void>>(Promise.resolve());
   const analysisDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -77,6 +94,25 @@ export function CapturePanel() {
   const dataControlsAttestedRef = useRef(false);
   const externalAnalysisAllowedRef = useRef(false);
   const demoModeRef = useRef(false);
+  const inputStartGateRef = useRef(createInputStartGate());
+
+  const publishAnalysisState = (state: AnalysisState, resetHistory = false) => {
+    analysisStateRef.current = state;
+    onAnalysisStateChange(state, { resetHistory, resetLayout: resetHistory });
+  };
+  const publishTranscriptState = (state: TranscriptState) => {
+    transcriptRef.current = state;
+    setTranscript(state);
+    onTranscriptChange?.(state);
+  };
+  const hasActiveInput = () => Boolean(microphone.current || localClient.current || captionClient.current || synthetic.current);
+  const runInputStart = async (label: string, action: (attempt: number) => Promise<void> | void): Promise<void> => {
+    if (hasActiveInput()) { setMessage(`別の入力が動作中です。先に終了してから${label}を開始してください。`); return; }
+    const attempt = beginInputStart(inputStartGateRef.current);
+    if (attempt === null) { setMessage('入力の開始処理中です。完了するか終了してから再試行してください。'); return; }
+    try { await action(attempt); }
+    finally { finishInputStart(inputStartGateRef.current, attempt); }
+  };
 
   useEffect(() => { saveLocallyRef.current = saveLocally; }, [saveLocally]);
   useEffect(() => { retentionDaysRef.current = retentionDays; }, [retentionDays]);
@@ -84,7 +120,7 @@ export function CapturePanel() {
   useEffect(() => { analysisModeRef.current = analysisMode; }, [analysisMode]);
   useEffect(() => { void listMicrophones().then(setDevices).catch(() => setDevices([])); }, []);
   useEffect(() => { void purgeLegacyPlaintextTranscripts().catch(() => setMessage('旧版のplaintext保存を削除できません。ほかのTechMap tabを閉じて再読み込みしてください。')); }, []);
-  useEffect(() => () => { if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); void captionClient.current?.stop(); }, []);
+  useEffect(() => () => { cancelInputStart(inputStartGateRef.current); if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); void captionClient.current?.stop(); }, []);
 
   const connectPrivacy = async () => {
     if (!localRuntime) throw new Error('privacy-requires-loopback');
@@ -141,7 +177,19 @@ export function CapturePanel() {
     });
   };
 
-  const scheduleAnalysis = (transcriptState: TranscriptState, requestedMode = analysisModeRef.current, persistResult = true) => {
+  useLayoutEffect(() => {
+    if (analysisStateRef.current.revision === analysisState.revision) {
+      analysisStateRef.current = analysisState;
+      return;
+    }
+    analysisStateRef.current = analysisState;
+    persistSnapshot(transcriptRef.current);
+    // Sync before paint so an in-flight model continuation cannot apply against the pre-edit revision.
+    // persistSnapshot intentionally uses current refs; only controlled state revision is reactive here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisState]);
+
+  const scheduleAnalysis = (transcriptState: TranscriptState, requestedMode = analysisModeRef.current) => {
     const generation = analysisGenerationRef.current;
     analysisChain.current = analysisChain.current.then(async () => {
       if (generation !== analysisGenerationRef.current) return;
@@ -156,41 +204,54 @@ export function CapturePanel() {
         setOpenAiInFlight((value) => value + 1);
         try {
           openAiAnalyzer.current ??= new LocalOpenAiAnalyzer();
-          const delta = await openAiAnalyzer.current.analyze('gpt-5-mini', window.text, analysisStateRef.current);
+          const requestState = getAnalysisState();
+          analysisStateRef.current = requestState;
+          const delta = await openAiAnalyzer.current.analyze('gpt-5-mini', window.text, requestState);
           if (generation !== analysisGenerationRef.current) { setAnalysisStatus('sessionが切り替わったため、旧sessionの分析結果を破棄しました。'); return; }
           if (!externalAnalysisAllowedRef.current || !dataControlsAttestedRef.current) { setAnalysisStatus('分析中に外部送信許可が解除されたため、結果を適用しませんでした。'); return; }
           if (delta.operations.length === 0) { setAnalysisStatus('OpenAI分析: 構造上の変化はありません。'); return; }
-          const next = applyAnalysisDelta(analysisStateRef.current, delta, transcriptRef.current.utterances);
-          analysisStateRef.current = next; setAnalysisState(next); if (persistResult) persistSnapshot(transcriptRef.current);
+          const next = applyAnalysisDelta(getAnalysisState(), delta, transcriptRef.current.utterances);
+          publishAnalysisState(next); persistSnapshot(transcriptRef.current);
           setAnalysisStatus(`OpenAI分析をrevision ${next.revision}へ原子的に適用しました。`);
         } finally { setOpenAiInFlight((value) => Math.max(0, value - 1)); }
         return;
       }
       if (generation !== analysisGenerationRef.current) return;
       const currentTranscript = transcriptRef.current;
-      const delta = analyzeWithDeterministicMock(currentTranscript.utterances, analysisStateRef.current);
+      const currentState = getAnalysisState();
+      analysisStateRef.current = currentState;
+      const delta = analyzeWithDeterministicMock(currentTranscript.utterances, currentState);
       if (delta.operations.length === 0) { setAnalysisStatus('local mock: 構造上の変化はありません。'); return; }
-      const next = applyAnalysisDelta(analysisStateRef.current, delta, currentTranscript.utterances);
-      analysisStateRef.current = next; setAnalysisState(next); if (persistResult) persistSnapshot(currentTranscript);
+      const next = applyAnalysisDelta(getAnalysisState(), delta, currentTranscript.utterances);
+      publishAnalysisState(next); persistSnapshot(currentTranscript);
       setAnalysisStatus(`local mockをrevision ${next.revision}へ更新しました。`);
-    }).catch(() => setAnalysisStatus('分析を適用できませんでした。local workspaceは変更せず、mock／手動整理を継続できます。'));
+    }).catch((error: unknown) => {
+      if (error instanceof Error && error.message === 'analysis-stale-revision') {
+        setAnalysisStatus('分析中に手動編集またはundoが行われたため、古い分析結果を破棄しました。「分析を更新」で再実行できます。');
+        return;
+      }
+      if (error instanceof Error && error.message === 'analysis-withdrawn-evidence-replay') {
+        setAnalysisStatus('元に戻したAI itemと同じ根拠だけからの再追加を拒否しました。local workspaceは変更していません。');
+        return;
+      }
+      setAnalysisStatus('分析を適用できませんでした。local workspaceは変更せず、mock／手動整理を継続できます。');
+    });
   };
 
   const receive = (event: TranscriptUtterance) => {
     const next = applyTranscriptEvent(transcriptRef.current, event);
-    transcriptRef.current = next;
-    setTranscript(next);
+    publishTranscriptState(next);
     if (event.phase === 'final') {
       if (event.source !== 'synthetic') persistSnapshot(next);
       if (event.source !== 'synthetic' && analysisModeRef.current === 'openai') {
         if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
         analysisDebounceRef.current = setTimeout(() => {
           analysisDebounceRef.current = null;
-          scheduleAnalysis(transcriptRef.current, 'openai', true);
+          scheduleAnalysis(transcriptRef.current, 'openai');
         }, 10_000);
         setAnalysisStatus('OpenAI分析: 最新の確定発話を10秒windowでまとめています。');
       } else {
-        scheduleAnalysis(next, 'mock', event.source !== 'synthetic');
+        scheduleAnalysis(next, 'mock');
       }
     }
   };
@@ -230,11 +291,12 @@ export function CapturePanel() {
     }
   };
 
-  const startCaptionOcr = async () => {
+  const startCaptionOcr = async () => runInputStart('Teams字幕OCR', async (attempt) => {
     if (!localRuntime || !consentConfirmed) {
       setMessage(!localRuntime ? '公開UIではTeams画面を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
       return;
     }
+    consentAllowedRef.current = true;
     if (saveLocally) {
       try {
         const status = await (await connectPrivacy()).status();
@@ -242,13 +304,13 @@ export function CapturePanel() {
         privacyStatusRef.current = status; setPrivacyStatus(status);
       } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
     }
+    if (!inputStartIsCurrent(inputStartGateRef.current, attempt) || !consentAllowedRef.current) { setMessage('同意確認が解除されたためcaptureを開始しませんでした。'); return; }
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     demoModeRef.current = false;
-    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     consentRef.current = createConsentRecord();
-    consentAllowedRef.current = true;
     sessionWriteBlockedRef.current = false;
     persistenceMayExistRef.current = false;
     persistedSessionRef.current = false;
@@ -262,34 +324,52 @@ export function CapturePanel() {
     dispatch({ type: 'start-requested' });
     dispatch({ type: 'permission-granted' });
     setMessage('同意確認済み。Teamsを前面表示すると字幕領域の選択overlayを開きます。');
+    let client: LocalCaptionClient | null = null;
     try {
-      const client = new LocalCaptionClient(handleCaptionRuntimeEvent);
-      client.onFailure = () => {
+      let callbackClient: LocalCaptionClient | null = null;
+      let clientFailed = false;
+      const createdClient = new LocalCaptionClient((event) => {
+        if (!callbackClient || captionClient.current !== callbackClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        handleCaptionRuntimeEvent(event);
+      });
+      callbackClient = createdClient;
+      client = createdClient;
+      createdClient.onFailure = () => {
+        clientFailed = true;
+        if (captionClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
         const state = captionAssemblerRef.current.sourceState;
         captionClient.current = null;
+        releaseInputAttempt(inputStartGateRef.current, attempt);
         setInputMode('none');
         dispatch({ type: 'engine-unavailable' });
         if (!state.startsWith('degraded-')) setMessage('字幕OCR workerが停止しました。画像bufferは破棄済みです。');
       };
-      await client.start();
-      if (!consentAllowedRef.current) { await client.stop().catch(() => undefined); throw new Error('consent-revoked'); }
-      captionClient.current = client;
+      await createdClient.start();
+      const adopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdClient,
+        () => !clientFailed && consentAllowedRef.current && !hasActiveInput(), (value) => { captionClient.current = value; });
+      if (!adopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      if (clientFailed || captionClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('caption-engine-failed-during-start');
+      client = null;
       setInputMode('teams-caption');
       dispatch({ type: 'started' });
     } catch (error) {
-      captionClient.current = null; setInputMode('none');
-      transitionCaptionSession({ type: 'stop' });
-      if (error instanceof Error && error.message === 'consent-revoked') { dispatch({ type: 'stop' }); setMessage('同意確認が解除されたためcaptureを開始しませんでした。'); return; }
+      await client?.stop().catch(() => undefined);
+      if (!inputAttemptControlsState(inputStartGateRef.current, attempt)) return;
+      if (captionClient.current === client) captionClient.current = null;
+      releaseInputAttempt(inputStartGateRef.current, attempt);
+      setInputMode('none');
+      if (error instanceof Error && (error.message === 'consent-revoked' || error.message === 'input-start-cancelled')) { dispatch({ type: 'stop' }); setMessage('入力開始が取り消されたためcaptureを開始しませんでした。'); return; }
       dispatch({ type: 'engine-unavailable' });
       setMessage('caption helperまたは固定hash検証済みTesseract 5.5.3を確認してください。画面は取得していません。');
     }
-  };
+  });
 
-  const startLocal = async () => {
+  const startLocal = async () => runInputStart('マイク', async (attempt) => {
     if (!localRuntime || !consentConfirmed) {
       setMessage(!localRuntime ? '公開UIでは実音声を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
       return;
     }
+    consentAllowedRef.current = true;
     if (saveLocally) {
       try {
         const status = await (await connectPrivacy()).status();
@@ -298,15 +378,13 @@ export function CapturePanel() {
         setPrivacyStatus(status);
       } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
     }
+    if (!inputStartIsCurrent(inputStartGateRef.current, attempt) || !consentAllowedRef.current) { setMessage('同意確認が解除されたためcaptureを開始しませんでした。'); return; }
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     demoModeRef.current = false;
-    transcriptRef.current = emptyTranscriptState;
-    setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState;
-    setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     consentRef.current = createConsentRecord();
-    consentAllowedRef.current = true;
     sessionWriteBlockedRef.current = false;
     persistenceMayExistRef.current = false;
     persistedSessionRef.current = false;
@@ -316,37 +394,62 @@ export function CapturePanel() {
     dispatch({ type: 'start-requested' });
     setMessage('同意確認済み。マイク許可はこの操作に対してのみ要求します。');
     let capture: MicrophoneCapture | null = null;
+    let client: LocalCompanionTranscriptionClient | null = null;
     try {
       let ready = false;
-      const client = new LocalCompanionTranscriptionClient('local', receive);
-      client.onFailure = () => {
-        void microphone.current?.stop(); microphone.current = null;
+      let callbackClient: LocalCompanionTranscriptionClient | null = null;
+      let clientFailed = false;
+      const createdClient = new LocalCompanionTranscriptionClient('local', (event) => {
+        if (!callbackClient || localClient.current !== callbackClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        receive(event);
+      });
+      callbackClient = createdClient;
+      client = createdClient;
+      createdClient.onFailure = () => {
+        clientFailed = true;
+        if (localClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        const ownedCapture = microphone.current;
+        microphone.current = null;
+        localClient.current = null;
         setInputMode('none');
         dispatch({ type: 'engine-unavailable' });
         setMessage('ローカル音声認識が停止し、以後の音声は取得されません。合成デモへ切り替えられます。');
+        void Promise.resolve(ownedCapture?.stop()).catch(() => undefined).finally(() => releaseInputAttempt(inputStartGateRef.current, attempt));
       };
-      capture = await startMicrophoneCapture(deviceId || undefined, (samples) => { if (ready) void client.sendPcm(samples).catch(() => undefined); });
-      if (!consentAllowedRef.current) { await capture.stop(); throw new Error('consent-revoked'); }
-      microphone.current = capture;
+      capture = await startMicrophoneCapture(deviceId || undefined, (samples) => {
+        if (ready && localClient.current === createdClient && inputAttemptOwnsSession(inputStartGateRef.current, attempt)) void createdClient.sendPcm(samples).catch(() => undefined);
+      });
+      const microphoneAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, capture,
+        () => consentAllowedRef.current && !hasActiveInput(), (value) => { microphone.current = value; });
+      if (!microphoneAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
       setInputMode('microphone');
       dispatch({ type: 'permission-granted' });
-      await client.start();
-      if (!consentAllowedRef.current) { await client.stop().catch(() => undefined); throw new Error('consent-revoked'); }
-      localClient.current = client;
+      await createdClient.start();
+      const clientAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdClient,
+        () => !clientFailed && consentAllowedRef.current && microphone.current === capture && localClient.current === null && captionClient.current === null && synthetic.current === null,
+        (value) => { localClient.current = value; });
+      if (!clientAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      if (clientFailed || localClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('local-engine-failed-during-start');
       ready = true;
       dispatch({ type: 'started' });
       setMessage('生音声はmemory内だけで処理され、PC外にもdiskにも送られません。');
-      setDevices(await listMicrophones());
+      void listMicrophones().then(setDevices).catch(() => setDevices([]));
     } catch (error) {
-      await capture?.stop(); microphone.current = null; localClient.current = null; setInputMode('none');
-      if (error instanceof Error && error.message === 'consent-revoked') { dispatch({ type: 'stop' }); setMessage('同意確認が解除されたためcaptureを開始しませんでした。'); return; }
+      if (microphone.current === capture) microphone.current = null;
+      if (localClient.current === client) localClient.current = null;
+      await capture?.stop().catch(() => undefined);
+      await client?.stop().catch(() => undefined);
+      if (!inputAttemptControlsState(inputStartGateRef.current, attempt)) return;
+      releaseInputAttempt(inputStartGateRef.current, attempt);
+      setInputMode('none');
+      if (error instanceof Error && (error.message === 'consent-revoked' || error.message === 'input-start-cancelled')) { dispatch({ type: 'stop' }); setMessage('入力開始が取り消されたためcaptureを開始しませんでした。'); return; }
       const denied = error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
       dispatch({ type: denied ? 'permission-denied' : error instanceof DOMException ? 'device-unavailable' : 'engine-unavailable' });
       setMessage(denied ? 'ブラウザー設定でマイクを許可するか、合成デモを利用してください。' : 'companion・model・microphoneを確認するか、合成デモを利用してください。');
     }
-  };
+  });
 
-  const startDemo = () => {
+  const startDemo = async () => runInputStart('合成デモ', () => {
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     demoModeRef.current = true;
@@ -358,15 +461,15 @@ export function CapturePanel() {
     persistenceMayExistRef.current = false;
     saveLocallyRef.current = false;
     setSaveLocally(false);
-    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     setMeetingEnded(false);
     analysisModeRef.current = 'mock'; setAnalysisMode('mock');
     synthetic.current?.stop(); synthetic.current = createSyntheticTranscription(receive); synthetic.current.start();
     setInputMode('synthetic');
     dispatch({ type: 'demo-started' });
     setMessage('合成データだけを再生中です。マイク・外部送信・永続保存は使用しません。');
-  };
+  });
   const pause = async () => {
     microphone.current?.pause(); synthetic.current?.pause();
     await localClient.current?.pause().catch(() => undefined);
@@ -387,6 +490,12 @@ export function CapturePanel() {
       captionAssemblerRef.current = { sourceState, rows: [] };
       setCaptionSourceState(sourceState);
       await captionClient.current.resume().catch(() => {
+        const client = captionClient.current;
+        captionClient.current = null;
+        cancelInputStart(inputStartGateRef.current);
+        void client?.stop().catch(() => undefined);
+        setInputMode('none');
+        transitionCaptionSession({ type: 'stop' });
         dispatch({ type: 'engine-unavailable' });
         setMessage('字幕OCRを再開できませんでした。新しいsessionとして開始してください。');
       });
@@ -394,6 +503,7 @@ export function CapturePanel() {
     dispatch({ type: 'resume' });
   };
   const stop = async () => {
+    cancelInputStart(inputStartGateRef.current);
     const stoppedMode = inputMode;
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     synthetic.current?.stop(); synthetic.current = null;
@@ -414,7 +524,7 @@ export function CapturePanel() {
     sessionWriteBlockedRef.current = true;
     saveLocallyRef.current = false;
     setSaveLocally(false);
-    if (microphone.current || localClient.current || captionClient.current || synthetic.current) await stop();
+    if (inputStartGateRef.current.pendingAttempt !== null || inputStartGateRef.current.activeAttempt !== null || hasActiveInput()) await stop();
     await persistenceChain.current;
     const id = sessionIdRef.current;
     const localDeleteRequired = persistedSessionRef.current || persistenceMayExistRef.current;
@@ -423,8 +533,8 @@ export function CapturePanel() {
       try { await (await connectPrivacy()).delete(id); localDeleteVerified = true; }
       catch { localDeleteVerified = false; }
     }
-    transcriptRef.current = emptyTranscriptState; setTranscript(emptyTranscriptState);
-    analysisStateRef.current = emptyAnalysisState; setAnalysisState(emptyAnalysisState);
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
     setMeetingEnded(false);
     if (localDeleteVerified) {
       persistedSessionRef.current = false;
@@ -445,6 +555,7 @@ export function CapturePanel() {
     setConsentConfirmed(confirmed);
     consentAllowedRef.current = confirmed;
     if (!confirmed) {
+      cancelInputStart(inputStartGateRef.current);
       if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
       externalAnalysisAllowedRef.current = false;
       setExternalAnalysisAllowed(false);
@@ -474,8 +585,8 @@ export function CapturePanel() {
       const validatedAnalysis = validateAnalysisState(value.analysis, state.utterances);
       analysisGenerationRef.current += 1;
       demoModeRef.current = false;
-      transcriptRef.current = state; setTranscript(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
-      analysisStateRef.current = validatedAnalysis; setAnalysisState(validatedAnalysis);
+      publishTranscriptState(state); sessionIdRef.current = value.id; sessionCreatedAtRef.current = value.createdAt; consentRef.current = value.consent;
+      publishAnalysisState(validatedAnalysis, true);
       persistedSessionRef.current = true;
       persistenceMayExistRef.current = true;
       sessionWriteBlockedRef.current = false;
@@ -492,6 +603,8 @@ export function CapturePanel() {
   };
 
   const active = sessionState === 'listening' || sessionState === 'paused';
+  const startPending = sessionState === 'requesting-permission' || sessionState === 'starting-local-engine';
+  const inputBusy = active || startPending;
   const realCapture = inputMode === 'microphone' || inputMode === 'teams-caption';
   const latest = transcript.utterances.slice(-2);
   const preview = createMinimalUtteranceWindow(transcript.utterances);
@@ -516,19 +629,19 @@ export function CapturePanel() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <label className="sr-only" htmlFor="microphone-device">入力マイク</label>
-          <select id="microphone-device" value={deviceId} disabled={active} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs"><option value="">既定のマイク</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select>
-          {!active && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
-          {!active && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
+          <select id="microphone-device" value={deviceId} disabled={inputBusy} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs"><option value="">既定のマイク</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select>
+          {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
+          {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
           {sessionState === 'listening' && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
           {sessionState === 'paused' && <button onClick={() => void resume()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white">再開</button>}
-          {active && <button onClick={() => void stop()} className="rounded-lg border border-[#c8a7a0] bg-white px-3 py-2 text-xs font-semibold text-[#8b3f34]">終了</button>}
-          {!active && <button onClick={startDemo} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}
+          {inputBusy && <button onClick={() => void stop()} className="rounded-lg border border-[#c8a7a0] bg-white px-3 py-2 text-xs font-semibold text-[#8b3f34]">終了</button>}
+          {!inputBusy && <button onClick={() => void startDemo()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}
         </div>
       </div>
       <div className="mx-auto mt-2 grid max-w-[1600px] gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs lg:grid-cols-[auto_1fr]">
         <div className="flex flex-wrap items-center gap-2">
           <label>分析mode <select value={analysisMode} onChange={(event) => { const mode = event.target.value as 'mock' | 'openai'; if (mode === 'mock' && analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; } analysisModeRef.current = mode; setAnalysisMode(mode); }} className="ml-1 rounded border px-2 py-1"><option value="mock">local deterministic mock</option><option value="openai" disabled={inputMode === 'synthetic' || !externalAnalysisAllowed || !dataControlsAttested || !privacyStatus?.credentialConfigured}>OpenAI gpt-5-mini</option></select></label>
-          <button disabled={!transcript.utterances.some((item) => item.phase === 'final')} onClick={() => { if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; } scheduleAnalysis(transcriptRef.current, analysisMode, inputMode !== 'synthetic'); }} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">分析を更新</button>
+          <button disabled={!transcript.utterances.some((item) => item.phase === 'final')} onClick={() => { if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; } scheduleAnalysis(transcriptRef.current, analysisMode); }} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">分析を更新</button>
           <span>{analysisStatus}</span>
         </div>
         <div aria-live="polite" className="flex min-w-0 flex-wrap gap-2">
@@ -536,7 +649,7 @@ export function CapturePanel() {
           {analysisState.items.length === 0 && <span className="text-[#65736e]">分析itemはまだありません。</span>}
         </div>
       </div>
-      <details open={!consentConfirmed || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
+      <details open={(!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
         <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
           <div className="space-y-2">

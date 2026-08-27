@@ -83,10 +83,14 @@ export class LocalCaptionClient {
         const value = await readJson(await this.#request(`/v1/caption-sessions/${this.#sessionId}/events?after=${this.#cursor}`, {
           method: 'GET', cache: 'no-store',
         })) as { cursor?: unknown; events?: unknown; stopped?: unknown; paused?: unknown };
+        if (this.#closed) return;
         if (!Number.isSafeInteger(value.cursor) || !Array.isArray(value.events) || typeof value.stopped !== 'boolean' || typeof value.paused !== 'boolean') {
           throw new Error('caption-engine-invalid-events');
         }
-        for (const event of value.events) this.#onEvent(parseCaptionRuntimeEvent(event));
+        for (const event of value.events) {
+          if (this.#closed) return;
+          this.#onEvent(parseCaptionRuntimeEvent(event));
+        }
         this.#cursor = value.cursor as number;
         this.#paused = value.paused;
         if (value.stopped && !this.#closed) this.#fail('caption-engine-stopped');

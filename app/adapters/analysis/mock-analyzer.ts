@@ -21,26 +21,28 @@ function titleFor(text: string): string {
   return text.trim().replace(/\s+/g, ' ').slice(0, 80);
 }
 
-function tempIdFor(id: string): string {
+function hashFor(value: string): string {
   let hash = 2_166_136_261;
-  for (const character of id) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16_777_619); }
-  return `u_${(hash >>> 0).toString(16).padStart(8, '0')}_${id.slice(-41)}`;
+  for (const character of value) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16_777_619); }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function tempIdFor(id: string): string {
+  return `u_${hashFor(id)}_${id.slice(-41)}`;
 }
 
 export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], state: AnalysisState): AnalysisDelta {
   const finals = utterances.filter((item) => item.phase === 'final').slice(-8);
   const operations: AnalysisOperation[] = [];
-  const seen = new Set<string>();
+  const pendingAdds = new Map<string, Extract<AnalysisOperation, { op: 'add' }>>();
   for (const utterance of finals) {
     const text = utterance.text.trim();
     if (!text) continue;
     const classified = classify(text);
-    const key = `${classified.kind}:${normalize(text.replace(/^(?:訂正|撤回)[:：]?\s*/, ''))}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const matching = state.items.find((item) => item.provenance === 'ai-suggested' && item.kind === classified.kind && normalize(item.title) === normalize(titleFor(text)));
+    const matchingByEvidence = state.items.find((item) => item.evidenceUtteranceIds.includes(utterance.id));
+    const matching = matchingByEvidence ?? state.items.find((item) => item.provenance === 'ai-suggested' && item.kind === classified.kind && normalize(item.title) === normalize(titleFor(text)));
     if (matching) {
-      if (!matching.evidenceUtteranceIds.includes(utterance.id) && matching.evidenceUtteranceIds.length < maximumEvidenceIds) operations.push({ op: 'update', itemId: matching.id, title: null, detail: null, status: null, confidence: Math.max(matching.confidence, 0.72), addEvidenceUtteranceIds: [utterance.id], removeEvidenceUtteranceIds: [] });
+      if (matching.provenance === 'ai-suggested' && !matching.evidenceUtteranceIds.includes(utterance.id) && matching.evidenceUtteranceIds.length < maximumEvidenceIds) operations.push({ op: 'update', itemId: matching.id, title: null, detail: null, status: null, confidence: Math.max(matching.confidence, 0.72), addEvidenceUtteranceIds: [utterance.id], removeEvidenceUtteranceIds: [] });
       continue;
     }
     const retractTarget = /撤回/.test(text) ? [...state.items].reverse().find((item) => item.provenance === 'ai-suggested' && ['decision', 'claim', 'action'].includes(item.kind) && item.status !== 'withdrawn') : undefined;
@@ -55,13 +57,21 @@ export function analyzeWithDeterministicMock(utterances: TranscriptUtterance[], 
       operations.push({ op: 'update', itemId: correctionTarget.id, title: titleFor(text), detail: text.slice(0, 500), status: classified.status, confidence: 0.84, addEvidenceUtteranceIds: [utterance.id], removeEvidenceUtteranceIds: [] });
       continue;
     }
+    const pendingKey = `${classified.kind}:${normalize(text.replace(/^(?:訂正|撤回)[:：]?\s*/, ''))}`;
+    const pending = pendingAdds.get(pendingKey);
+    if (pending) {
+      if (pending.evidenceUtteranceIds.length < maximumEvidenceIds) pending.evidenceUtteranceIds.push(utterance.id);
+      continue;
+    }
     if (state.items.length + operations.filter((operation) => operation.op === 'add').length >= maximumAnalysisItems) continue;
-    operations.push({ op: 'add', tempId: tempIdFor(utterance.id), kind: classified.kind, title: titleFor(text), detail: text.slice(0, 500), status: classified.status, confidence: 0.72, evidenceUtteranceIds: [utterance.id] });
+    const operation: Extract<AnalysisOperation, { op: 'add' }> = { op: 'add', tempId: tempIdFor(utterance.id), kind: classified.kind, title: titleFor(text), detail: text.slice(0, 500), status: classified.status, confidence: 0.72, evidenceUtteranceIds: [utterance.id] };
+    operations.push(operation);
+    pendingAdds.set(pendingKey, operation);
   }
   return {
     contractVersion: 1,
     baseRevision: state.revision,
-    deltaId: `mock_${state.revision}_${finals.map((item) => item.id).join('_')}`.slice(0, 80),
+    deltaId: `mock_${state.revision}_${hashFor(finals.map((item) => item.id).join('\0'))}`,
     model: 'deterministic-mock-v1', promptHash: analysisPromptHash, schemaHash: analysisSchemaHash, operations,
   };
 }
