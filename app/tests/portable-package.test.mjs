@@ -20,6 +20,18 @@ test('portable build pins official Node and assembles an explicit privacy-safe a
   assert.doesNotMatch(source, /Copy-PortableDirectory \$repositoryRoot/);
 });
 
+test('portable build completes Vinext runtime peer dependencies without symlinks', async () => {
+  const [completion, build] = await Promise.all([
+    read('scripts/complete-vinext-standalone.mjs'),
+    read('scripts/build-mvp.ps1'),
+  ]);
+  assert.match(completion, /\['react', 'react-dom', 'react-server-dom-webpack'\]/);
+  assert.match(completion, /dereference: true/);
+  assert.match(completion, /Standalone runtime package is missing after completion/);
+  assert.match(build, /TECHMAP_STANDALONE_BUILD -eq '1'/);
+  assert.match(build, /complete-vinext-standalone\.mjs/);
+});
+
 test('portable launcher verifies every packaged file before offline OCR setup and loopback launch', async () => {
   const [portable, launcher, mvp, config] = await Promise.all([
     read('scripts/start-portable.ps1'),

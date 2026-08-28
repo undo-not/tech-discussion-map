@@ -42,6 +42,7 @@ if ($ContractOnly) {
     [void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) { throw "PowerShell syntax check failed for $scriptName" }
   }
+  Assert-Leaf (Join-Path $PSScriptRoot 'complete-vinext-standalone.mjs') 'MVP build script'
   $startSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'start-mvp.ps1') -Raw
   if ($startSource -match 'techmap-launch|launchUrl|Start-Process\s+[^\r\n]*Secret') { throw 'Launch secret must not appear in a URL or browser process argument.' }
   foreach ($requiredPattern in @('Set-WebLaunchSecret \$launchSecret', "Start-Process 'http://127\.0\.0\.1:3000/'", "@\(\`$webCli, 'start', '--hostname', '127\.0\.0\.1', '--port', '3000'\)", "HOST = '127\.0\.0\.1'", "PORT = '3000'", 'taskkill\.exe /PID \$Process\.Id /T /F')) {
