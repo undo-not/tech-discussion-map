@@ -13,6 +13,11 @@ function Assert-Directory([string]$Path, [string]$Description) {
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "$Description is missing: $Path" }
 }
 
+function Get-TechMapLocalAppData {
+  if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA) -or -not [IO.Path]::IsPathRooted($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA must be an absolute path.' }
+  return [IO.Path]::GetFullPath($env:LOCALAPPDATA)
+}
+
 function Test-PortAvailable([int]$Port) {
   $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
   try { $listener.Start(); return $true } catch { return $false } finally { $listener.Stop() }
@@ -29,7 +34,7 @@ Then close this PowerShell window, open a new one, and run scripts\start-mvp.ps1
 }
 
 if ($ContractOnly) {
-  foreach ($scriptName in @('build-mvp.ps1', 'build-tesseract-runtime.ps1', 'install-attested-tesseract.ps1', 'preflight-mvp.ps1', 'start-mvp.ps1', 'test-preflight-node-guidance.ps1')) {
+  foreach ($scriptName in @('build-mvp.ps1', 'build-portable-windows.ps1', 'build-tesseract-runtime.ps1', 'install-attested-tesseract.ps1', 'preflight-mvp.ps1', 'setup-openai-key.ps1', 'start-mvp.ps1', 'start-portable.ps1', 'test-native-portability.ps1', 'test-portable-package.ps1', 'test-preflight-node-guidance.ps1')) {
     $scriptPath = Join-Path $PSScriptRoot $scriptName
     Assert-Leaf $scriptPath "MVP script"
     $tokens = $null
@@ -37,9 +42,10 @@ if ($ContractOnly) {
     [void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) { throw "PowerShell syntax check failed for $scriptName" }
   }
+  Assert-Leaf (Join-Path $PSScriptRoot 'complete-vinext-standalone.mjs') 'MVP build script'
   $startSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'start-mvp.ps1') -Raw
   if ($startSource -match 'techmap-launch|launchUrl|Start-Process\s+[^\r\n]*Secret') { throw 'Launch secret must not appear in a URL or browser process argument.' }
-  foreach ($requiredPattern in @('Set-WebLaunchSecret \$launchSecret', "Start-Process 'http://127\.0\.0\.1:3000/'", "@\(\`$webCli, 'start', '--hostname', '127\.0\.0\.1', '--port', '3000'\)", 'taskkill\.exe /PID \$Process\.Id /T /F')) {
+  foreach ($requiredPattern in @('Set-WebLaunchSecret \$launchSecret', "Start-Process 'http://127\.0\.0\.1:3000/'", "@\(\`$webCli, 'start', '--hostname', '127\.0\.0\.1', '--port', '3000'\)", "HOST = '127\.0\.0\.1'", "PORT = '3000'", 'taskkill\.exe /PID \$Process\.Id /T /F')) {
     if ($startSource -notmatch $requiredPattern) { throw "MVP launcher behavior is missing: $requiredPattern" }
   }
   foreach ($reason in @('Node.js was not found on PATH.', 'The installed Node.js version is unsupported: v20.0.0')) {
@@ -73,15 +79,26 @@ if ($nodeVersion -lt [Version]'22.18.0') {
   throw (New-NodeSetupMessage "The installed Node.js version is unsupported: $nodeVersionText")
 }
 
+$webRuntimePath = if ($env:TECHMAP_PORTABLE_ROOT) {
+  Join-Path $repositoryRoot 'app\dist\standalone\server.js'
+} else {
+  Join-Path $repositoryRoot 'app\node_modules\vinext\dist\cli.js'
+}
 $required = @(
-  @{ Path = Join-Path $repositoryRoot 'app\node_modules\vinext\dist\cli.js'; Description = 'Web dependencies' },
+  @{ Path = $webRuntimePath; Description = 'Web runtime' },
   @{ Path = Join-Path $repositoryRoot 'native\teams-captions\build\Release\techmap-captions.exe'; Description = 'Teams caption helper' },
   @{ Path = Join-Path $repositoryRoot 'native\privacy\build\Release\techmap-privacy.exe'; Description = 'Privacy helper' }
 )
 foreach ($item in $required) { Assert-Leaf $item.Path $item.Description }
-Assert-Directory (Join-Path $repositoryRoot 'app\dist\server') 'Production web build'
+$webBuildDirectory = if ($env:TECHMAP_PORTABLE_ROOT) {
+  Join-Path $repositoryRoot 'app\dist\standalone\dist\server'
+} else {
+  Join-Path $repositoryRoot 'app\dist\server'
+}
+Assert-Directory $webBuildDirectory 'Production web build'
 
-$ocrRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TechMapLive\ocr\current'
+$localAppData = Get-TechMapLocalAppData
+$ocrRoot = Join-Path $localAppData 'TechMapLive\ocr\current'
 $manifestPath = Join-Path $ocrRoot 'techmap-ocr.manifest'
 $tesseractPath = Join-Path $ocrRoot 'tesseract.exe'
 $japanesePath = Join-Path $ocrRoot 'tessdata\jpn.traineddata'
@@ -114,7 +131,7 @@ foreach ($port in @(3000, 43117)) { if (-not (Test-PortAvailable $port)) { throw
 $fallback = @(
   Join-Path $repositoryRoot 'native\windows-audio\build\Release\techmap-audio.exe'
   Join-Path $repositoryRoot 'native\transcription\build\Release\techmap-transcriber.exe'
-  Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TechMapLive\models\ggml-tiny.bin'
+  Join-Path $localAppData 'TechMapLive\models\ggml-tiny.bin'
 )
 $fallbackReady = ($fallback | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }).Count -eq 0
 Write-Output 'Required OCR-first runtime: PASS'

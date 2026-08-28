@@ -31,6 +31,11 @@ try {
   }
 } finally { Pop-Location }
 
+if ($env:TECHMAP_STANDALONE_BUILD -eq '1') {
+  & node (Join-Path $repositoryRoot 'scripts\complete-vinext-standalone.mjs')
+  if ($LASTEXITCODE -ne 0) { throw 'Vinext standalone runtime completion failed.' }
+}
+
 & node (Join-Path $repositoryRoot 'scripts\scan-public-repo.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Public repository privacy scan failed.' }
 Write-Output 'TechMap Live MVP build: PASS'

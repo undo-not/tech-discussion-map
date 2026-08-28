@@ -1,4 +1,6 @@
-param()
+param(
+  [switch]$NoBrowser
+)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
@@ -7,6 +9,7 @@ $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Pat
 
 $nodePath = (Get-Command node -ErrorAction Stop).Source
 $webCli = Join-Path $repositoryRoot 'app\node_modules\vinext\dist\cli.js'
+$standaloneServer = Join-Path $repositoryRoot 'app\dist\standalone\server.js'
 $companionEntry = Join-Path $repositoryRoot 'companion\local-transcription-host.mjs'
 $randomBytes = New-Object byte[] 32
 $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -77,11 +80,18 @@ try {
   $companion = Start-OwnedProcess $repositoryRoot @($companionEntry) @{
     TECHMAP_LAUNCH_SECRET = $launchSecret
   }
-  $web = Start-OwnedProcess (Join-Path $repositoryRoot 'app') @($webCli, 'start', '--hostname', '127.0.0.1', '--port', '3000') @{}
+  if ($env:TECHMAP_PORTABLE_ROOT) {
+    $web = Start-OwnedProcess (Split-Path -Parent $standaloneServer) @($standaloneServer) @{
+      HOST = '127.0.0.1'
+      PORT = '3000'
+    }
+  } else {
+    $web = Start-OwnedProcess (Join-Path $repositoryRoot 'app') @($webCli, 'start', '--hostname', '127.0.0.1', '--port', '3000') @{}
+  }
   Wait-Loopback 43117 $companion
   Wait-Loopback 3000 $web
   Set-WebLaunchSecret $launchSecret
-  Start-Process 'http://127.0.0.1:3000/'
+  if (-not $NoBrowser -and $env:TECHMAP_NO_BROWSER -ne '1') { Start-Process 'http://127.0.0.1:3000/' }
   $launchSecret = $null
   Write-Output 'TechMap Live is running locally. Press Ctrl+C in this window to stop every owned process.'
   while (-not $companion.HasExited -and -not $web.HasExited) { Start-Sleep -Milliseconds 500 }

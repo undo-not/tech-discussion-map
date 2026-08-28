@@ -29,6 +29,11 @@ function Assert-Hash([string]$Path, [string]$Expected) {
   if ($actual -ne $Expected.ToLowerInvariant()) { throw "SHA-256 verification failed for $Path" }
 }
 
+function Get-TechMapLocalAppData {
+  if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA) -or -not [IO.Path]::IsPathRooted($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA must be an absolute path.' }
+  return [IO.Path]::GetFullPath($env:LOCALAPPDATA)
+}
+
 Assert-Hash $sourceExecutable $TesseractSha256
 Assert-Hash $sourceJapanese $JapaneseSha256
 Assert-Hash $sourceEnglish $EnglishSha256
@@ -37,7 +42,7 @@ if ($versionLine -notmatch "^tesseract $([regex]::Escape($expectedVersion))(?:\s
   throw "Expected Tesseract $expectedVersion after hash verification."
 }
 
-$ocrRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TechMapLive\ocr'
+$ocrRoot = Join-Path (Get-TechMapLocalAppData) 'TechMapLive\ocr'
 $target = Join-Path $ocrRoot 'current'
 $stage = Join-Path $ocrRoot ('.stage-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $ocrRoot -Force | Out-Null

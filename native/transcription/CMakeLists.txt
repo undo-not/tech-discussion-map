@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 project(techmap_transcription LANGUAGES C CXX)
 
 include(FetchContent)
@@ -9,6 +12,7 @@ set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_JAVA OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   whisper
