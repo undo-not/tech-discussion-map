@@ -29,7 +29,7 @@ Then close this PowerShell window, open a new one, and run scripts\start-mvp.ps1
 }
 
 if ($ContractOnly) {
-  foreach ($scriptName in @('build-mvp.ps1', 'build-tesseract-runtime.ps1', 'install-attested-tesseract.ps1', 'preflight-mvp.ps1', 'start-mvp.ps1')) {
+  foreach ($scriptName in @('build-mvp.ps1', 'build-tesseract-runtime.ps1', 'install-attested-tesseract.ps1', 'preflight-mvp.ps1', 'start-mvp.ps1', 'test-preflight-node-guidance.ps1')) {
     $scriptPath = Join-Path $PSScriptRoot $scriptName
     Assert-Leaf $scriptPath "MVP script"
     $tokens = $null
@@ -57,9 +57,16 @@ $node = Get-Command node -ErrorAction SilentlyContinue
 if ($null -eq $node) {
   throw (New-NodeSetupMessage 'Node.js was not found on PATH.')
 }
-$nodeVersionText = (& $node.Source --version).Trim()
+$nodeVersionOutput = @()
+try {
+  $nodeVersionOutput = @(& $node.Source --version 2>&1)
+  $nodeExitCode = $LASTEXITCODE
+} catch {
+  throw (New-NodeSetupMessage "Node.js could not be started: $($_.Exception.Message)")
+}
+$nodeVersionText = ($nodeVersionOutput | Out-String).Trim()
 $nodeVersion = $null
-if ($LASTEXITCODE -ne 0 -or $nodeVersionText -notmatch '^v(?<version>\d+\.\d+\.\d+)$' -or -not [Version]::TryParse($matches.version, [ref]$nodeVersion)) {
+if ($nodeExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($nodeVersionText) -or $nodeVersionText -notmatch '^v(?<version>\d+\.\d+\.\d+)$' -or -not [Version]::TryParse($matches.version, [ref]$nodeVersion)) {
   throw (New-NodeSetupMessage "The Node.js version could not be verified: $nodeVersionText")
 }
 if ($nodeVersion -lt [Version]'22.18.0') {

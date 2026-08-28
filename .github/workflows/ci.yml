@@ -121,3 +121,6 @@ jobs:
       - name: Validate one-command MVP launcher without capture or runtime dependencies
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/preflight-mvp.ps1 -ContractOnly
+      - name: Test actionable Node.js recovery guidance
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-preflight-node-guidance.ps1
