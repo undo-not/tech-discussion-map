@@ -24,6 +24,8 @@ Export requires a user gesture and the browser OS save picker. There is no defau
 
 The OpenAI API key is stored as generic Windows Credential `TechMapLive/OpenAIApiKey`. The setup helper reads it with console echo disabled, validates a printable `sk-` form, writes it through `CredWriteW`, zeroes temporary buffers, and never returns the credential. Status reveals only configured／not configured. Deletion uses `CredDeleteW`.
 
+Zoom RTMSのClient ID、Client Secret、Webhook Secret Tokenも用途別のgeneric Windows Credentialとして保存する。Nodeはsecretを受け取らず、native helperはframed stdinで限定入力だけを受けるclient署名、Webhook verify boolean、endpoint validation署名を提供する。汎用HMAC command、environment fallback、command-line secretを禁止する。詳細は`zoom-rtms-source.md`に従う。
+
 ## Redaction and Responses request
 
 The outbound analysis context includes at most eight final utterances with only utterance ID, source, time, and text, plus at most 40 active local analysis projections with item ID, kind, provenance, status, title, the first 180 characters of detail, and evidence IDs. Withdrawn tombstone content stays local and is not projected; the local atomic applicator rejects a returned add based only on evidence already held by one AI tombstone. The utterance window is redacted locally, then the bounded combined context is redacted again so previously derived labels cannot bypass current policy. Deterministic local rules apply NFKC normalization and redact OpenAI-style keys, credential assignments, email, phone, IPv4, and URLs containing query strings. They are heuristic and do not claim to remove every personal or organization name. Invalid Unicode, NUL, empty, oversize, or residual secret patterns fail closed. Before enabling external analysis, the UI states every projected field and displays the actual final combined context that would be sent; it never shows a different transcript-only preview or a hidden pre-redaction diagnostic log.
@@ -43,6 +45,8 @@ Before external analysis can be enabled, the operator confirms the selected API 
 | Another Windows user reads session files | protected current-user-only DACL + DPAPI CurrentUser | native Windows self-test |
 | Plaintext or raw audio reaches disk | typed session schema, forbidden-field scan, DPAPI-only writer, no audio store | privacy-store test and source scan |
 | OCR image, TSV, or raw display name leaves bounded native memory | selected-region-only worker, anonymous pipe protocol, native aliasing, exact-key event schema, buffer zeroing | native pure tests, source scan, caption companion test |
+| Zoom raw identity or meeting identifier reaches browser/store | raw packetはNode memory内で即時alias化、browser-facing exact schema、epoch normalization、stop/overflow時buffer消去 | synthetic RTMS protocol test and source scan |
+| Public Zoom webhook tunnel exposes browser APIs | dedicated loopback port with one POST route, signed raw-body verification, timestamp window, no CORS or bearer routes | webhook surface test |
 | Secret reaches OpenAI or logs | deterministic redaction, residual-secret verifier, no request/content log | redaction tests |
 | OpenAI retains application state | `store:false`, no conversations/background/files/tools | exact-key request test |
 | Unapproved runtime egress | exact OpenAI URL factory; all other remote runtime services absent | repository/network policy test |
@@ -51,5 +55,7 @@ Before external analysis can be enabled, the operator confirms the selected API 
 | Retention outlives user choice | expiry sweep and whole-session delete | lifecycle test |
 
 Tests and CI use only synthetic content. Real meeting verification requires participant consent and a separate manual checklist that records no content.
+
+Zoom RTMSではraw `user_id`／`user_name`がWebSocketを所有するNode process memoryを一時通過するため、Teams OCRのnative alias境界より弱い。event ringや保存領域へは渡さないが、same-user malwareからNode memoryを防御しない。また一時tunnelの公開中は署名検証前の専用Webhook listenerが到達可能となり、Zoom RTMS serverには接続元IPが見える。
 
 The boundary does not defend against malware or another process already running as the same Windows user: such a process can inspect that user's UI or invoke that user's DPAPI and Credential Manager context. The launch secret blocks unauthenticated loopback callers and other local users; it is not a same-user sandbox.

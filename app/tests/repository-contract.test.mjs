@@ -60,6 +60,7 @@ test('every long-lived local client can renew an idle bearer without changing it
   for (const relativePath of [
     '../adapters/transcription/local-caption-client.ts',
     '../adapters/transcription/local-companion-client.ts',
+    '../adapters/transcription/local-zoom-rtms-client.ts',
     '../adapters/audio/local-teams-audio-client.ts',
     '../adapters/privacy/local-privacy-client.ts',
   ]) {

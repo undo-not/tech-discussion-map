@@ -89,6 +89,7 @@ try {
     $web = Start-OwnedProcess (Join-Path $repositoryRoot 'app') @($webCli, 'start', '--hostname', '127.0.0.1', '--port', '3000') @{}
   }
   Wait-Loopback 43117 $companion
+  Wait-Loopback 43118 $companion
   Wait-Loopback 3000 $web
   Set-WebLaunchSecret $launchSecret
   if (-not $NoBrowser -and $env:TECHMAP_NO_BROWSER -ne '1') { Start-Process 'http://127.0.0.1:3000/' }

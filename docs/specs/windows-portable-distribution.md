@@ -14,6 +14,14 @@ OpenAI分析を使う場合だけ、各PCで次を実行し、非表示promptへ
 powershell -ExecutionPolicy Bypass -File scripts/setup-openai-key.ps1
 ```
 
+Zoom RTMS入力を使う場合は、各PCで次を実行し、Zoom General AppのClient ID、Client Secret、Webhook Secret Tokenを非表示promptへ入力します。値はWindows Credential Managerだけに保存され、ZIP、browser、command line、GitHubには入りません。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup-zoom-rtms.ps1
+```
+
+Zoom MarketplaceのWebhook URLには、利用者が用意した一時HTTPS tunnelから`http://127.0.0.1:43118/zoom/webhook`だけへ転送するURLを設定します。43117または3000をtunnelへ公開しないでください。Tunnelはアプリに同梱せず、自動起動もしません。Zoom側にはDeveloper Pack、`meeting:read:meeting_transcript` scopeとRTMS event subscriptionが別途必要です。
+
 現時点のポータブルZIPはOCR-firstテスト用であり、local Whisper modelを含みません。したがって音声fallbackはmodelを別途明示導入するまで`UNAVAILABLE (optional)`と表示されます。Teams字幕OCRは全参加者の同意後、「Teams字幕OCRを開始」で字幕本文と発話者だけを含む矩形を選択してください。画像と生音声は保存しません。
 
 ## 配布物の信頼確認
@@ -33,6 +41,6 @@ gh attestation verify TechMapLive-windows-x64.zip `
 
 CIはsourceと固定downloadからallowlistで新規directoryを組み立てます。配布対象は、Vinext standalone production server、companionに必要なdomain/adapter source、4つのnative helper、固定OCR runtime、固定Node.js runtime、起動script、licenseと文書だけです。repositoryの`data/local`、`.env*`、`.wrangler`、log、DB、音声、文字起こし、会議・session・capture名のdata fileは拒否します。build output、ZIP、manifestはGit管理対象外です。
 
-runtimeのUIとcompanionは`127.0.0.1`だけでlistenします。OCR開始、音声fallback、OpenAI API送信には既存仕様の明示操作と同意gateが引き続き適用されます。通常起動時のnetworkは、利用者が設定・許可したOpenAI API通信を除き不要です。
+runtimeのUIとbrowser companionは`127.0.0.1`だけでlistenします。Zoom RTMS利用時だけ専用Webhook listener `127.0.0.1:43118`を利用者のHTTPS tunnel経由で公開し、Zoom WebSocketへtranscript-only接続します。OCR開始、音声fallback、Zoom arm、OpenAI API送信には明示操作と同意gateが適用されます。
 
 実Teams字幕の認識精度とTeams build差異はCIでは検証できません。別PCでは合成デモ、字幕矩形選択、発話者alias、停止、再起動の順に受入確認し、診断結果や会話本文をIssue/PRへ貼らないでください。

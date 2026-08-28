@@ -9,6 +9,7 @@ import { purgeLegacyPlaintextTranscripts } from '@/adapters/persistence/legacy-s
 import { exportSessionToUserSelectedPath, LocalPrivacyClient, type StoredSession, type StoredSessionMetadata } from '@/adapters/privacy/local-privacy-client.ts';
 import { LocalCompanionTranscriptionClient } from '@/adapters/transcription/local-companion-client.ts';
 import { LocalCaptionClient } from '@/adapters/transcription/local-caption-client.ts';
+import { LocalZoomRtmsClient, type ZoomRtmsEvent, type ZoomRtmsState } from '@/adapters/transcription/local-zoom-rtms-client.ts';
 import type { CaptionRuntimeEvent } from '@/adapters/transcription/teams-caption-frames.ts';
 import { createSyntheticTranscription } from '@/adapters/transcription/synthetic-transcription.ts';
 import { createConsentRecord, type ConsentRecord } from '@/domain/privacy/consent.ts';
@@ -62,8 +63,9 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const [analysisMode, setAnalysisMode] = useState<'mock' | 'openai'>('mock');
   const [analysisStatus, setAnalysisStatus] = useState('local mockは確定発話ごとに自動更新します。');
   const [openAiInFlight, setOpenAiInFlight] = useState(0);
-  const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'teams-caption' | 'audio-fallback' | 'synthetic'>('none');
+  const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'teams-caption' | 'zoom-rtms' | 'audio-fallback' | 'synthetic'>('none');
   const [captionSourceState, setCaptionSourceState] = useState<CaptionSourceState>('idle');
+  const [zoomRtmsState, setZoomRtmsState] = useState<ZoomRtmsState>('stopped');
   const [teamsAudioProbe, setTeamsAudioProbe] = useState<TeamsAudioProbeReport | null>(null);
   const [teamsAudioProbeBusy, setTeamsAudioProbeBusy] = useState(false);
   const [teamsAudioState, setTeamsAudioState] = useState<CaptureState>('stopped');
@@ -75,6 +77,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const localClient = useRef<LocalCompanionTranscriptionClient | null>(null);
   const teamsAudioClient = useRef<LocalTeamsAudioClient | null>(null);
   const captionClient = useRef<LocalCaptionClient | null>(null);
+  const zoomRtmsClient = useRef<LocalZoomRtmsClient | null>(null);
   const captionAssemblerRef = useRef<CaptionAssemblerState>(emptyCaptionAssemblerState);
   const privacyClient = useRef<LocalPrivacyClient | null>(null);
   const openAiAnalyzer = useRef<LocalOpenAiAnalyzer | null>(null);
@@ -112,7 +115,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setTranscript(state);
     onTranscriptChange?.(state);
   };
-  const hasActiveInput = () => Boolean(microphone.current || localClient.current || teamsAudioClient.current || captionClient.current || synthetic.current);
+  const hasActiveInput = () => Boolean(microphone.current || localClient.current || teamsAudioClient.current || captionClient.current || zoomRtmsClient.current || synthetic.current);
   const runInputStart = async (label: string, action: (attempt: number) => Promise<void> | void): Promise<void> => {
     if (hasActiveInput()) { setMessage(`別の入力が動作中です。先に終了してから${label}を開始してください。`); return; }
     const attempt = beginInputStart(inputStartGateRef.current);
@@ -127,7 +130,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   useEffect(() => { analysisModeRef.current = analysisMode; }, [analysisMode]);
   useEffect(() => { void listMicrophones().then(setDevices).catch(() => setDevices([])); }, []);
   useEffect(() => { void purgeLegacyPlaintextTranscripts().catch(() => setMessage('旧版のplaintext保存を削除できません。ほかのTechMap tabを閉じて再読み込みしてください。')); }, []);
-  useEffect(() => () => { teamsAudioProbeGenerationRef.current += 1; cancelInputStart(inputStartGateRef.current); if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); void teamsAudioClient.current?.stop(); void captionClient.current?.stop(); }, []);
+  useEffect(() => () => { teamsAudioProbeGenerationRef.current += 1; cancelInputStart(inputStartGateRef.current); if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current); synthetic.current?.stop(); void microphone.current?.stop(); void localClient.current?.stop(); void teamsAudioClient.current?.stop(); void captionClient.current?.stop(); void zoomRtmsClient.current?.stop(); }, []);
 
   const connectPrivacy = async () => {
     if (!localRuntime) throw new Error('privacy-requires-loopback');
@@ -371,6 +374,102 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     }
   });
 
+  const handleZoomRtmsEvent = (event: ZoomRtmsEvent) => {
+    if (event.type === 'utterance') {
+      receive(event.utterance);
+      return;
+    }
+    setZoomRtmsState(event.state);
+    if (event.state === 'connecting') setMessage('署名済みZoom RTMS streamを検出し、transcript-only WebSocketへ接続しています。');
+    else if (event.state === 'active') setMessage('Zoomの発話者付きtranscriptを直接受信中です。raw表示名とZoom IDはlocal alias化後に破棄します。');
+    else if (event.state === 'paused') setMessage('Zoom transcriptのworkspace入力を一時停止しています。受信packetは保存せず破棄します。');
+    else if (event.state === 'degraded') setMessage(`Zoom RTMS接続を安全に継続できません（${event.reason}）。新しいsigned started eventを待ちます。`);
+    else if (event.state === 'stopped') setMessage('Zoom側でRTMS streamが終了しました。未配信bufferとspeaker aliasを破棄しました。');
+  };
+
+  const startZoomRtms = async () => runInputStart('Zoom RTMS', async (attempt) => {
+    if (!localRuntime || !consentConfirmed) {
+      setMessage(!localRuntime ? '公開UIではZoom RTMSを受信できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
+      return;
+    }
+    consentAllowedRef.current = true;
+    if (saveLocally) {
+      try {
+        const status = await (await connectPrivacy()).status();
+        if (!status.secureStore) throw new Error('privacy-store-unverified');
+        privacyStatusRef.current = status; setPrivacyStatus(status);
+      } catch { setMessage('保護された保存先を確認できないため開始しません。保存を外すかprivacy helperを起動してください。'); return; }
+    }
+    if (!inputStartIsCurrent(inputStartGateRef.current, attempt) || !consentAllowedRef.current) { setMessage('同意確認が解除されたためZoom RTMSを待機しません。'); return; }
+    if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
+    analysisGenerationRef.current += 1;
+    demoModeRef.current = false;
+    publishTranscriptState(emptyTranscriptState);
+    publishAnalysisState(emptyAnalysisState, true);
+    consentRef.current = createConsentRecord();
+    sessionWriteBlockedRef.current = false;
+    persistenceMayExistRef.current = false;
+    persistedSessionRef.current = false;
+    sessionIdRef.current = crypto.randomUUID();
+    sessionCreatedAtRef.current = new Date().toISOString();
+    setMeetingEnded(false);
+    setZoomRtmsState('waiting');
+    dispatch({ type: 'start-requested' });
+    dispatch({ type: 'permission-granted' });
+    let client: LocalZoomRtmsClient | null = null;
+    try {
+      let callbackClient: LocalZoomRtmsClient | null = null;
+      let clientFailed = false;
+      const pendingEvents: ZoomRtmsEvent[] = [];
+      const createdClient = new LocalZoomRtmsClient((event) => {
+        if (!callbackClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        if (zoomRtmsClient.current === null) {
+          if (pendingEvents.length >= 64) { clientFailed = true; return; }
+          pendingEvents.push(event);
+          return;
+        }
+        if (zoomRtmsClient.current !== callbackClient) return;
+        handleZoomRtmsEvent(event);
+      });
+      callbackClient = createdClient;
+      client = createdClient;
+      const status = await createdClient.status();
+      if (!status.configured) throw new Error('zoom-credentials-not-configured');
+      createdClient.onFailure = () => {
+        clientFailed = true;
+        if (zoomRtmsClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) return;
+        zoomRtmsClient.current = null;
+        releaseInputAttempt(inputStartGateRef.current, attempt);
+        setInputMode('none');
+        setZoomRtmsState('stopped');
+        dispatch({ type: 'engine-unavailable' });
+        setMessage('Zoom RTMS sessionが終了しました。未配信bufferとspeaker aliasは破棄済みです。');
+      };
+      await createdClient.start();
+      const adopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdClient,
+        () => !clientFailed && consentAllowedRef.current && !hasActiveInput(), (value) => { zoomRtmsClient.current = value; });
+      if (!adopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
+      if (clientFailed || zoomRtmsClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('zoom-rtms-failed-during-start');
+      for (const event of pendingEvents.splice(0)) handleZoomRtmsEvent(event);
+      client = null;
+      setInputMode('zoom-rtms');
+      dispatch({ type: 'started' });
+      setMessage('Zoom RTMSを15分間待機中です。一時HTTPS tunnelは専用listener 127.0.0.1:43118/zoom/webhook のみに転送してください。');
+    } catch (error) {
+      await client?.stop().catch(() => undefined);
+      if (!inputAttemptControlsState(inputStartGateRef.current, attempt)) return;
+      if (zoomRtmsClient.current === client) zoomRtmsClient.current = null;
+      releaseInputAttempt(inputStartGateRef.current, attempt);
+      setInputMode('none');
+      setZoomRtmsState('stopped');
+      if (error instanceof Error && (error.message === 'consent-revoked' || error.message === 'input-start-cancelled')) { dispatch({ type: 'stop' }); setMessage('入力開始が取り消されたためZoom RTMSを待機しませんでした。'); return; }
+      dispatch({ type: 'engine-unavailable' });
+      setMessage(error instanceof Error && (error.message === 'zoom-credentials-not-configured' || error.message === 'zoom-rtms-503')
+        ? 'Zoom RTMS credentialが未設定です。scripts/setup-zoom-rtms.ps1を実行してください。'
+        : 'Zoom RTMS local adapterを開始できませんでした。credentialとcompanionを確認してください。');
+    }
+  });
+
   const startLocal = async () => runInputStart('マイク', async (attempt) => {
     if (!localRuntime || !consentConfirmed) {
       setMessage(!localRuntime ? '公開UIでは実音声を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
@@ -433,7 +532,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       dispatch({ type: 'permission-granted' });
       await createdClient.start();
       const clientAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdClient,
-        () => !clientFailed && consentAllowedRef.current && microphone.current === capture && localClient.current === null && captionClient.current === null && synthetic.current === null,
+        () => !clientFailed && consentAllowedRef.current && microphone.current === capture && localClient.current === null && captionClient.current === null && zoomRtmsClient.current === null && synthetic.current === null,
         (value) => { localClient.current = value; });
       if (!clientAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
       if (clientFailed || localClient.current !== createdClient || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('local-engine-failed-during-start');
@@ -555,7 +654,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
 
       await createdSelf.start();
       const selfAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdSelf,
-        () => !selfFailed && consentAllowedRef.current && microphone.current === capture && localClient.current === null && teamsAudioClient.current === null && captionClient.current === null && synthetic.current === null,
+        () => !selfFailed && consentAllowedRef.current && microphone.current === capture && localClient.current === null && teamsAudioClient.current === null && captionClient.current === null && zoomRtmsClient.current === null && synthetic.current === null,
         (value) => { localClient.current = value; });
       if (!selfAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
       if (selfFailed || localClient.current !== createdSelf || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('local-engine-failed-during-start');
@@ -575,7 +674,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       };
       await createdRemote.start(probe.selectedProcessId);
       const remoteAdopted = await adoptStartedInput(inputStartGateRef.current, attempt, createdRemote,
-        () => consentAllowedRef.current && microphone.current === capture && localClient.current === createdSelf && teamsAudioClient.current === null && captionClient.current === null && synthetic.current === null,
+        () => consentAllowedRef.current && microphone.current === capture && localClient.current === createdSelf && teamsAudioClient.current === null && captionClient.current === null && zoomRtmsClient.current === null && synthetic.current === null,
         (value) => { teamsAudioClient.current = value; });
       if (!remoteAdopted) throw new Error(consentAllowedRef.current ? 'input-start-cancelled' : 'consent-revoked');
       if (teamsAudioClient.current !== createdRemote || !inputAttemptOwnsSession(inputStartGateRef.current, attempt)) throw new Error('teams-audio-failed-during-start');
@@ -626,6 +725,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const pause = async () => {
     microphone.current?.pause(); synthetic.current?.pause();
     await localClient.current?.pause().catch(() => undefined);
+    await zoomRtmsClient.current?.pause().catch(() => undefined);
     if (captionClient.current) {
       await captionClient.current.pause().catch(() => undefined);
       transitionCaptionSession({ type: 'stop' });
@@ -637,6 +737,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   };
   const resume = async () => {
     microphone.current?.resume(); synthetic.current?.resume(); await localClient.current?.resume().catch(() => undefined);
+    await zoomRtmsClient.current?.resume().catch(() => undefined);
     if (captionClient.current) {
       let sourceState = transitionCaptionSource('stopped', { type: 'prepare' });
       sourceState = transitionCaptionSource(sourceState, { type: 'consent-confirmed' });
@@ -664,13 +765,15 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     await localClient.current?.stop().catch(() => undefined); localClient.current = null;
     await teamsAudioClient.current?.stop().catch(() => undefined); teamsAudioClient.current = null;
     await captionClient.current?.stop().catch(() => undefined); captionClient.current = null;
+    await zoomRtmsClient.current?.stop().catch(() => undefined); zoomRtmsClient.current = null;
     transitionCaptionSession({ type: 'stop' });
     setTeamsAudioState('stopped');
+    setZoomRtmsState('stopped');
     setInputMode('none');
     await persistenceChain.current;
     dispatch({ type: 'stop' });
     setMeetingEnded(true);
-    const discarded = stoppedMode === 'teams-caption' ? 'OCR画像・TSV buffer' : stoppedMode === 'audio-fallback' ? '自分側・Teams側の生音声buffer' : '生音声buffer';
+    const discarded = stoppedMode === 'teams-caption' ? 'OCR画像・TSV buffer' : stoppedMode === 'zoom-rtms' ? 'RTMS packet・speaker alias buffer' : stoppedMode === 'audio-fallback' ? '自分側・Teams側の生音声buffer' : '生音声buffer';
     setMessage(saveLocallyRef.current ? `入力を終了し、${discarded}を破棄しました。暗号化sessionは保持期限まで残ります。` : `入力を終了し、${discarded}を破棄しました。未保存sessionはmemoryだけに残っています。`);
   };
   const deleteCurrent = async (): Promise<boolean> => {
@@ -763,7 +866,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const active = sessionState === 'listening' || sessionState === 'paused';
   const startPending = sessionState === 'requesting-permission' || sessionState === 'starting-local-engine';
   const inputBusy = active || startPending;
-  const realCapture = inputMode === 'microphone' || inputMode === 'teams-caption' || inputMode === 'audio-fallback';
+  const realCapture = inputMode === 'microphone' || inputMode === 'teams-caption' || inputMode === 'zoom-rtms' || inputMode === 'audio-fallback';
   const latest = transcript.utterances.slice(-2);
   const preview = createMinimalUtteranceWindow(transcript.utterances);
   let outboundPreview = '確定発話がないか、検証に失敗したため送信不能';
@@ -778,7 +881,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         <span className={`rounded-full px-3 py-1 font-bold ${realCapture ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {realCapture ? sessionState === 'paused' ? 'PAUSED' : 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
-        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'audio-fallback' ? `audio fallback (${teamsAudioState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
+        <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'zoom-rtms' ? `Zoom RTMS (${zoomRtmsState})` : inputMode === 'audio-fallback' ? `audio fallback (${teamsAudioState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
       </div>
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="min-w-0">
@@ -788,6 +891,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         <div className="flex flex-wrap items-center gap-2">
           <label className="sr-only" htmlFor="microphone-device">入力マイク</label>
           <select id="microphone-device" value={deviceId} disabled={inputBusy} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs"><option value="">既定のマイク</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select>
+          {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startZoomRtms()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Zoom RTMSを待機' : 'Zoom RTMSはローカル実行のみ'}</button>}
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
           {sessionState === 'listening' && inputMode !== 'audio-fallback' && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
@@ -797,8 +901,8 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         </div>
       </div>
       <div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs">
-        <b>推奨: Teams字幕OCR</b>
-        <span>Teams側の認識文と表示話者を利用します。音声フォールバックはOCRが使えない場合だけ、診断と開始を別々に明示操作してください。</span>
+        <b>推奨: Zoom RTMS</b>
+        <span>Zoomでは公式の発話者付きtranscriptを直接利用します。Zoom RTMSを設定できない会議ではTeams字幕OCR、音声フォールバックの順で明示選択してください。</span>
         {!inputBusy && <button disabled={!localRuntime || !consentConfirmed || teamsAudioProbeBusy} onClick={() => void probeTeamsAudioFallback()} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">{teamsAudioProbeBusy ? 'Teams音声を診断中' : 'Teams音声を診断'}</button>}
         {!inputBusy && teamsAudioProbe?.supportedBuild && teamsAudioProbe.targetFound && teamsAudioProbe.activationSucceeded && <button onClick={() => void startTeamsAudioFallback()} className="rounded border border-[#c8a7a0] px-2 py-1 font-semibold text-[#8b3f34]">診断済み音声フォールバックを開始</button>}
         {teamsAudioProbe && <span>Windows build {teamsAudioProbe.windowsBuild} · Teams {teamsAudioProbe.targetFound ? '検出' : '未検出'} · 音声activation {teamsAudioProbe.activationSucceeded ? '成功' : '失敗'}</span>}
@@ -818,7 +922,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
           <div className="space-y-2">
-            <label className="flex items-start gap-2 font-semibold text-[#8b3f34]"><input type="checkbox" checked={consentConfirmed} onChange={(event) => revokeConsent(event.target.checked)} />Teams側の表示だけに依存せず、全参加者がこのアプリの文字起こし・分析に同意したことを確認しました</label>
+            <label className="flex items-start gap-2 font-semibold text-[#8b3f34]"><input type="checkbox" checked={consentConfirmed} onChange={(event) => revokeConsent(event.target.checked)} />会議サービス側の表示だけに依存せず、全参加者がこのアプリの文字起こし・分析に同意したことを確認しました</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={saveLocally} disabled={!consentConfirmed || active} onChange={(event) => setSaveLocally(event.target.checked)} />確定文字起こし・分析・session状態を暗号化してローカル保存</label>
             <label>保持期間 <select value={retentionDays} disabled={!saveLocally || active} onChange={(event) => setRetentionDays(Number(event.target.value) as RetentionDays)} className="ml-2 rounded border px-2 py-1">{retentionOptions.map((days) => <option value={days} key={days}>{days}日</option>)}</select></label>
             <p>保存先: %LOCALAPPDATA%\TechMapLive\sessions（current-user-only ACL + DPAPI）。生音声、OCR画像、TSV、raw表示名は保存対象外です。</p>
