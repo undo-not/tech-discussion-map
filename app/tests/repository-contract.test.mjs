@@ -42,6 +42,20 @@ test('review hashes are checkout-independent on Windows', async () => {
   assert.match(attributes, /^\* text=auto eol=lf$/m);
 });
 
+test('Windows MVP preflight gives one actionable Node.js recovery path', async () => {
+  const source = await readFile(new URL('../../scripts/preflight-mvp.ps1', import.meta.url), 'utf8');
+  assert.match(source, /Get-Command node -ErrorAction SilentlyContinue/);
+  assert.match(source, /Node\.js was not found on PATH\./);
+  assert.match(source, /The installed Node\.js version is unsupported:/);
+  assert.match(source, /TechMap Live requires Node\.js 22\.18 or later\./);
+  assert.match(source, /winget install --id OpenJS\.NodeJS\.LTS --exact/);
+  assert.match(source, /close this PowerShell window, open a new one/);
+  assert.match(source, /try \{[\s\S]*@\(& \$node\.Source --version 2>&1\)[\s\S]*\} catch \{/);
+  assert.match(source, /\(\$nodeVersionOutput \| Out-String\)\.Trim\(\)/);
+  assert.match(source, /\[string\]::IsNullOrWhiteSpace\(\$nodeVersionText\)/);
+  assert.doesNotMatch(source, /Get-Command node -ErrorAction Stop/);
+});
+
 test('every long-lived local client can renew an idle bearer without changing its session', async () => {
   for (const relativePath of [
     '../adapters/transcription/local-caption-client.ts',
