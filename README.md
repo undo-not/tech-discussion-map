@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-tesseract.ps1 `
 powershell -ExecutionPolicy Bypass -File scripts/start-mvp.ps1
 ```
 
-まず「合成デモ」でtimeline→分析→mind mapを確認できます。Zoom RTMSを使うPCでは`powershell -ExecutionPolicy Bypass -File scripts/setup-zoom-rtms.ps1`でGeneral App credentialをWindows Credential Managerへ登録し、利用者の一時HTTPS tunnelを`127.0.0.1:43118/zoom/webhook`だけへ向けます。全参加者同意後、UIの「Zoom RTMSを待機」を押してからRTMSを開始してください。armは15分・one-shotで、3000または43117を公開してはいけません。実Teamsでは全参加者の同意を確認し、「Teams字幕OCRを開始」から字幕本文と発話者を含む範囲だけをdragします。OCRが利用できない場合に限り、明示操作で音声fallbackへ切り替えます。
+まず「合成デモ」でtimeline→分析→mind mapを確認できます。Zoom RTMSを使うPCでは`powershell -ExecutionPolicy Bypass -File scripts/setup-zoom-rtms.ps1`でGeneral App credentialをWindows Credential Managerへ登録し、利用者の一時HTTPS tunnelを`127.0.0.1:43118/zoom/webhook`だけへ向けます。全参加者同意後、UIの「Zoom RTMSを待機」を押してRTMSを開始し、signed stream検出後60秒以内に「検出したZoom streamを接続」を押してください。複数stream検出時は接続しません。armは15分・one-shotで、3000または43117を公開してはいけません。実Teamsでは全参加者の同意を確認し、「Teams字幕OCRを開始」から字幕本文と発話者を含む範囲だけをdragします。OCRが利用できない場合に限り、明示操作で音声fallbackへ切り替えます。
 
 詳しい起動境界は[Windows local MVP launch specification](docs/specs/local-runtime-launch.md)、OCRは[Teams caption source capability specification](docs/specs/teams-caption-source.md)、音声fallbackは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。
 

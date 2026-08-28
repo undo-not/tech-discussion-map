@@ -46,7 +46,7 @@ Before external analysis can be enabled, the operator confirms the selected API 
 | Plaintext or raw audio reaches disk | typed session schema, forbidden-field scan, DPAPI-only writer, no audio store | privacy-store test and source scan |
 | OCR image, TSV, or raw display name leaves bounded native memory | selected-region-only worker, anonymous pipe protocol, native aliasing, exact-key event schema, buffer zeroing | native pure tests, source scan, caption companion test |
 | Zoom raw identity or meeting identifier reaches browser/store | raw packetはNode memory内で即時alias化、browser-facing exact schema、epoch normalization、stop/overflow時buffer消去 | synthetic RTMS protocol test and source scan |
-| Public Zoom webhook tunnel exposes browser APIs | dedicated loopback port with one POST route, signed raw-body verification, timestamp window, no CORS or bearer routes | webhook surface test |
+| Public Zoom webhook tunnel exposes browser APIs or exhausts native verifier | dedicated loopback port with one POST route, signed raw-body verification, timestamp window, no CORS or bearer routes, bounded concurrency/rate/connections/timeouts | webhook surface and rate-limit test |
 | Secret reaches OpenAI or logs | deterministic redaction, residual-secret verifier, no request/content log | redaction tests |
 | OpenAI retains application state | `store:false`, no conversations/background/files/tools | exact-key request test |
 | Unapproved runtime egress | exact OpenAI URL factory; all other remote runtime services absent | repository/network policy test |

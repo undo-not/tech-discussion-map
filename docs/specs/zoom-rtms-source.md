@@ -17,7 +17,7 @@ Client handshakeはnative helperがframed stdinからboundedな`meeting_uuid`と
 ## Arming and connection state
 
 1. 全参加者の同意recordが存在し、利用者が`Zoom RTMSを待機`を押した場合だけ1 sessionをarmする。
-2. armは15分で失効し、最初の署名済み`meeting.rtms_started`に一度だけbindする。未arm時のstarted eventはIDを保持せず`not-armed`で応答する。
+2. armは15分で失効する。最初の署名済み`meeting.rtms_started`は60秒だけcompanion memoryへ保留し、browserへidentityを出さず`awaiting-confirmation`を通知する。利用者が第二のbuttonで確認した場合だけbindする。確認待ちに別started eventを検出した場合は両方を曖昧として破棄し、未arm時はIDを保持せず`not-armed`で応答する。
 3. Webhook signatureはraw bodyに対する`v0:{timestamp}:{body}`を検証し、ローカル時計との差が5分を超えるrequestをrejectする。Zoomは標準replay windowを規定していないため、5分は本アプリのfail-closed policyである。
 4. Signaling WebSocketではmessage type 1、media server response type 2を扱う。Transcript media WebSocketにはprotocol v1、sequence 0、`media_type: 8`だけをrequestし、成功後にsignaling socketへtype 7 ACKを返す。type 12 keepaliveにはtype 13で応答する。
 5. signaling URLとhandshakeで返るtranscript URLの両方を接続直前に検査する。`wss:`、default/443 port、credentialなし、fragmentなし、bounded path、`zoom.us`またはそのdot-suffixだけを許可し、候補の一つでも外れればfail closedする。Zoomはproduction RTMS hostname一覧を保証していないため、実会議受入時に公式配信hostnameとの適合を確認し、例外を広いwildcardで回避しない。
@@ -25,16 +25,16 @@ Client handshakeはnative helperがframed stdinからboundedな`meeting_uuid`と
 
 ## Transcript and identity boundary
 
-type 17 packetはexact key、型、8,000文字、speaker上限、24時間のsession-relative時刻を検査する。Zoomのabsolute epoch millisecondsはcompanion内の最初の発話時刻から差し引き、browserや保存sessionへ渡さない。重複packetはbounded digest setで除外し、順序は既存utterance reducerが安定化する。
+type 17 packetは既知required field、型、8,000文字、speaker上限、24時間のsession-relative時刻を検査する。第三者protocolが追加したfieldは保持せず無視し、browser-facing outputだけをexact schemaで検証する。Zoomのabsolute epoch millisecondsはcompanion内の最初の発話時刻から差し引き、browserや保存sessionへ渡さない。重複packetはbounded digest setで除外し、順序は既存utterance reducerが安定化する。
 
-`user_id`と`user_name`はZoom WebSocketを所有するNode memoryを一時通過するが、packet処理中にだけ参照する。`user_id`はsession salt付きdigestをkeyとするmapで`speaker-1`から`speaker-999`へ変換し、raw ID、raw name、meeting UUID、stream ID、server URLをevent ring、browser、DPAPI session、logへ入れない。browser-facing eventはexact output schemaで再検証する。256 eventsを消費できない場合は古い会話を黙ってdropせず、bufferを消去してdegradedへfail closedする。stopはsocket、alias、dedup、未配信eventを消去する。
+`user_id`と`user_name`はZoom WebSocketを所有するNode memoryを一時通過するが、packet処理中にだけ参照する。`user_id`はsession salt付きdigestをkeyとするmapで`speaker-1`から`speaker-999`へ変換し、raw ID、raw name、meeting UUID、stream ID、server URLをevent ring、browser、DPAPI session、logへ入れない。browser-facing eventはexact output schemaで再検証する。browserがcursorで確認済みのeventはringからpruneし、未確認eventが256件へ達した場合だけbufferを消去してdegradedへfail closedする。利用者stopは未配信eventを消去し、Zoom stopped eventは安全な確定eventを最後のpollまで保持する。
 
 ## Network and data lifecycle
 
-Zoomへのruntime egressはnative Node WebSocketによるRTMS transcript socketだけである。Zoomからlocal listenerへのmetadata webhookは利用者の一時HTTPS tunnelを経由する。Tunnel公開中は署名検証前の専用portがInternetに到達可能となり、RTMS serverにはlocal public IPが見える。listenerは1 POST routeだけを持ち、CORSを返さず、browser bearer routesを共存させない。
+Zoomへのruntime egressはnative Node WebSocketによるRTMS transcript socketだけである。Zoomからlocal listenerへのmetadata webhookは利用者の一時HTTPS tunnelを経由する。Tunnel公開中は署名検証前の専用portがInternetに到達可能となり、RTMS serverにはlocal public IPが見える。listenerは1 POST routeだけを持ち、CORSを返さず、browser bearer routesを共存させない。署名形式を満たすrequestがnative helperを無制限spawnしないよう、同時検証2件、1分60件、接続64件、5秒timeoutへ制限する。
 
 Transcriptが既存OpenAI分析へ進む条件は他入力と同じで、外部分析gate、最小window、local redaction、`store:false`が必要である。ローカル保存も明示opt-in時だけDPAPI経路を使う。Zoom credential、raw webhook、raw RTMS packet、raw identityは保存対象ではない。
 
 ## Verification boundary
 
-CIは合成credential runnerとFake WebSocketでsignature rejection、one-shot arm、2段URL allowlist、handshake sequence、transcript-only media type、keepalive、aliasing、epoch normalization、dedup、専用Webhook route、CORS不在、停止時消去を検証する。実Zoom会議の受入は全参加者同意済みの別PCで行い、hostname互換性、遅延、日本語精度、話者対応、interruption recoveryを確認する。会話本文、参加者名、meeting ID、credential、tunnel URLをIssue／PR evidenceへ貼らない。
+CIは合成credential runnerとFake WebSocketでsignature rejection、two-step one-shot arm、曖昧stream拒否、acknowledged event prune、2段URL allowlist、handshake sequence、transcript-only media type、keepalive、aliasing、epoch normalization、dedup、専用Webhook route、CORS不在、rate limit、停止時消去を検証する。実Zoom会議の受入は全参加者同意済みの別PCで行い、hostname互換性、遅延、日本語精度、話者対応、interruption recoveryを確認する。会話本文、参加者名、meeting ID、credential、tunnel URLをIssue／PR evidenceへ貼らない。

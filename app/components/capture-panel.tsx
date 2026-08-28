@@ -380,10 +380,11 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
       return;
     }
     setZoomRtmsState(event.state);
-    if (event.state === 'connecting') setMessage('署名済みZoom RTMS streamを検出し、transcript-only WebSocketへ接続しています。');
+    if (event.state === 'awaiting-confirmation') setMessage('署名済みZoom streamを検出しました。60秒以内に「検出したZoom streamを接続」を押してください。別streamも検出した場合は接続しません。');
+    else if (event.state === 'connecting') setMessage('確認済みZoom RTMS streamへtranscript-only WebSocketで接続しています。');
     else if (event.state === 'active') setMessage('Zoomの発話者付きtranscriptを直接受信中です。raw表示名とZoom IDはlocal alias化後に破棄します。');
     else if (event.state === 'paused') setMessage('Zoom transcriptのworkspace入力を一時停止しています。受信packetは保存せず破棄します。');
-    else if (event.state === 'degraded') setMessage(`Zoom RTMS接続を安全に継続できません（${event.reason}）。新しいsigned started eventを待ちます。`);
+    else if (event.state === 'degraded') setMessage(`Zoom RTMS接続を安全に継続できません（${event.reason}）。終了してから再度待機してください。`);
     else if (event.state === 'stopped') setMessage('Zoom側でRTMS streamが終了しました。未配信bufferとspeaker aliasを破棄しました。');
   };
 
@@ -735,6 +736,14 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     }
     dispatch({ type: 'pause' });
   };
+  const confirmZoomStream = async () => {
+    try {
+      await zoomRtmsClient.current?.confirm();
+      setMessage('検出したZoom streamへの接続を確認しました。transcript-only handshakeを開始します。');
+    } catch {
+      setMessage('Zoom streamを確認できませんでした。複数stream検出または60秒timeout後は終了して再度待機してください。');
+    }
+  };
   const resume = async () => {
     microphone.current?.resume(); synthetic.current?.resume(); await localClient.current?.resume().catch(() => undefined);
     await zoomRtmsClient.current?.resume().catch(() => undefined);
@@ -894,7 +903,8 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startZoomRtms()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Zoom RTMSを待機' : 'Zoom RTMSはローカル実行のみ'}</button>}
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
-          {sessionState === 'listening' && inputMode !== 'audio-fallback' && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
+          {inputMode === 'zoom-rtms' && zoomRtmsState === 'awaiting-confirmation' && <button onClick={() => void confirmZoomStream()} className="rounded-lg bg-[#8b3f34] px-3 py-2 text-xs font-semibold text-white">検出したZoom streamを接続</button>}
+          {sessionState === 'listening' && inputMode !== 'audio-fallback' && (inputMode !== 'zoom-rtms' || zoomRtmsState === 'active') && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
           {sessionState === 'paused' && inputMode !== 'audio-fallback' && <button onClick={() => void resume()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white">再開</button>}
           {inputBusy && <button onClick={() => void stop()} className="rounded-lg border border-[#c8a7a0] bg-white px-3 py-2 text-xs font-semibold text-[#8b3f34]">終了</button>}
           {!inputBusy && <button onClick={() => void startDemo()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}

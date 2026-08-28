@@ -269,7 +269,7 @@ export function createCompanionServer(options = {}) {
       }
     }
 
-    const zoomMatch = /^\/v1\/zoom-rtms-sessions\/([a-f0-9-]{36})(?:\/(events|pause|resume|stop))?$/.exec(url.pathname);
+    const zoomMatch = /^\/v1\/zoom-rtms-sessions\/([a-f0-9-]{36})(?:\/(events|confirm|pause|resume|stop))?$/.exec(url.pathname);
     if (zoomMatch) {
       const action = zoomMatch[2];
       try {
@@ -282,6 +282,7 @@ export function createCompanionServer(options = {}) {
           }
           return sendJson(response, 200, result, origin);
         }
+        if (request.method === 'POST' && action === 'confirm') return sendJson(response, 200, zoomController.confirm(zoomMatch[1]), origin);
         if (request.method === 'POST' && action === 'pause') return sendJson(response, 200, zoomController.pause(zoomMatch[1]), origin);
         if (request.method === 'POST' && action === 'resume') return sendJson(response, 200, zoomController.resume(zoomMatch[1]), origin);
         if (request.method === 'POST' && action === 'stop') return sendJson(response, 200, zoomController.stop(zoomMatch[1]), origin);

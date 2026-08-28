@@ -2,13 +2,14 @@ import { getLocalLaunchSecret } from '../companion/launch-secret.ts';
 import { parseTranscriptUtterance, type TranscriptUtterance } from '../../domain/transcription/utterance.ts';
 
 const zoomCompanionOrigin = 'http://127.0.0.1:43117';
-const zoomStates = ['waiting', 'connecting', 'active', 'paused', 'degraded', 'stopped'] as const;
+const zoomStates = ['waiting', 'awaiting-confirmation', 'connecting', 'active', 'paused', 'degraded', 'stopped'] as const;
 const zoomReasons = [
   'signed-stream-announced', 'transcript-stream-active', 'user-paused', 'user-resumed', 'user-stopped',
   'zoom-stream-stopped', 'invalid-rtms-message', 'rtms-connection-failed', 'rtms-connection-closed',
   'rtms-signaling-handshake-failed', 'rtms-signaling-handshake-rejected', 'rtms-media-connection-failed',
   'rtms-media-handshake-failed', 'rtms-media-handshake-rejected', 'event-buffer-overflow',
   'zoom-stream-interrupted', 'rtms-reconnect-failed', 'arm-expired',
+  'signed-stream-awaiting-confirmation', 'stream-confirmation-expired', 'ambiguous-start-events',
 ] as const;
 
 export type ZoomRtmsState = (typeof zoomStates)[number];
@@ -92,6 +93,11 @@ export class LocalZoomRtmsClient {
     this.#paused = true;
   }
 
+  async confirm(): Promise<void> {
+    if (this.#closed || this.#paused) return;
+    await this.#control('confirm');
+  }
+
   async resume(): Promise<void> {
     if (this.#closed || !this.#paused) return;
     await this.#control('resume');
@@ -104,7 +110,7 @@ export class LocalZoomRtmsClient {
     if (this.#sessionId) await this.#control('stop');
   }
 
-  async #control(action: 'pause' | 'resume' | 'stop'): Promise<void> {
+  async #control(action: 'confirm' | 'pause' | 'resume' | 'stop'): Promise<void> {
     if (!this.#sessionId) return;
     const response = await this.#request(`/v1/zoom-rtms-sessions/${this.#sessionId}/${action}`, { method: 'POST' });
     if (!response.ok) throw new Error(`zoom-rtms-${response.status}`);

@@ -57,7 +57,7 @@ function webhook(event, payload, timestamp = String(Math.floor(nowMs / 1_000))) 
 function startedPayload() {
   return {
     meeting_uuid: 'synthetic-meeting', meeting_id: '123456789', account_id: 'synthetic-account', operator_id: 'synthetic-operator',
-    is_original_host: true, rtms_stream_id: 'synthetic-stream', server_urls: 'wss://rtms.zoom.us/signal',
+    is_original_host: true, rtms_stream_id: 'synthetic-stream', server_urls: 'wss://rtms.zoom.us/signal', future_optional_field: 'ignored',
   };
 }
 
@@ -83,7 +83,10 @@ test('signed RTMS start is one-shot armed and emits only normalized aliased tran
 
   const created = await controller.createSession();
   const accepted = webhook('meeting.rtms_started', startedPayload());
-  assert.deepEqual(await controller.handleWebhook(accepted.headers, accepted.body), { status: 200, body: { status: 'accepted' } });
+  assert.deepEqual(await controller.handleWebhook(accepted.headers, accepted.body), { status: 200, body: { status: 'awaiting-confirmation' } });
+  assert.equal(FakeWebSocket.instances.length, 0);
+  assert.equal(controller.getEvents(created.sessionId, 0).state, 'awaiting-confirmation');
+  assert.deepEqual(controller.confirm(created.sessionId), { state: 'connecting' });
   await nextTurn();
   assert.equal(FakeWebSocket.instances.length, 1);
   const signaling = FakeWebSocket.instances[0];
@@ -104,7 +107,7 @@ test('signed RTMS start is one-shot armed and emits only normalized aliased tran
 
   const transcript = {
     msg_type: 17,
-    content: { user_id: 'private-user-42', user_name: 'Private Example', start_time: nowMs + 50_000, end_time: nowMs + 52_000, timestamp: nowMs + 52_100, language: 1, data: '合成された設計案です' },
+    content: { user_id: 'private-user-42', user_name: 'Private Example', start_time: nowMs + 50_000, end_time: nowMs + 52_000, timestamp: nowMs + 52_100, language: 1, data: '合成された設計案です', future_optional_field: 'ignored' },
   };
   media.receive(transcript);
   media.receive(transcript);
@@ -120,11 +123,39 @@ test('signed RTMS start is one-shot armed and emits only normalized aliased tran
   const browserJson = JSON.stringify(events);
   assert.doesNotMatch(browserJson, /private-user|Private Example|Other Private|synthetic-meeting|synthetic-stream/);
 
+  let acknowledgedCursor = events.cursor;
+  for (let index = 0; index < 300; index += 1) {
+    media.receive({
+      msg_type: 17,
+      content: { user_id: 'private-user-42', user_name: 'Private Example', start_time: nowMs + 60_000 + index * 1_000,
+        end_time: nowMs + 60_500 + index * 1_000, timestamp: nowMs + 60_600 + index * 1_000, language: 1, data: `合成event ${index}` },
+    });
+    if (index % 20 === 19) {
+      const batch = controller.getEvents(created.sessionId, acknowledgedCursor);
+      acknowledgedCursor = batch.cursor;
+      assert.equal(batch.state, 'active');
+    }
+  }
+
   const secondStart = webhook('meeting.rtms_started', startedPayload());
   assert.deepEqual(await controller.handleWebhook(secondStart.headers, secondStart.body), { status: 200, body: { status: 'not-armed' } });
   assert.equal(FakeWebSocket.instances.length, 2);
   controller.stop(created.sessionId);
   assert.equal(controller.getEvents(created.sessionId, 0).stopped, true);
+  controller.close();
+});
+
+test('a second signed started event before confirmation fails closed as ambiguous', async () => {
+  FakeWebSocket.instances.length = 0;
+  const controller = createZoomRtmsController({ credentials: syntheticCredentials(), WebSocketImpl: FakeWebSocket, now: () => nowMs });
+  const created = await controller.createSession();
+  const first = webhook('meeting.rtms_started', startedPayload());
+  assert.equal((await controller.handleWebhook(first.headers, first.body)).body.status, 'awaiting-confirmation');
+  const second = webhook('meeting.rtms_started', { ...startedPayload(), meeting_uuid: 'another-meeting', rtms_stream_id: 'another-stream' });
+  assert.deepEqual(await controller.handleWebhook(second.headers, second.body), { status: 200, body: { status: 'ambiguous' } });
+  assert.equal(controller.getEvents(created.sessionId, 0).state, 'degraded');
+  assert.throws(() => controller.confirm(created.sessionId), /not-awaiting-confirmation/);
+  assert.equal(FakeWebSocket.instances.length, 0);
   controller.close();
 });
 
@@ -160,6 +191,17 @@ test('dedicated webhook listener exposes one POST route and never emits CORS', a
   assert.equal(accepted.status, 200);
   assert.equal(accepted.headers.has('access-control-allow-origin'), false);
   assert.equal(calls.length, 1);
+  let lastStatus = 0;
+  for (let index = 0; index < 61; index += 1) {
+    const response = await fetch(`${origin}/zoom/webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-zm-request-timestamp': String(Math.floor(nowMs / 1_000)), 'x-zm-signature': `v0=${'0'.repeat(64)}` },
+      body: '{"synthetic":true}',
+    });
+    lastStatus = response.status;
+  }
+  assert.equal(lastStatus, 429);
+  assert.equal(calls.length, 61);
   calls[0].body.fill(0);
   await new Promise((resolve) => server.close(resolve));
 });

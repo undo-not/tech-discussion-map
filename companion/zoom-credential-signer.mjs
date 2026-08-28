@@ -54,7 +54,7 @@ export function createZoomCredentialSigner(options = {}) {
         output.push(Buffer.from(chunk));
         chunk.fill(0);
       });
-      worker.on('exit', (code) => {
+      worker.on('close', (code) => {
         if (settled) return;
         const combined = Buffer.concat(output);
         let result;

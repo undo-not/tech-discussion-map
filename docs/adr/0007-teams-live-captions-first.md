@@ -1,6 +1,6 @@
 # ADR-0007: Teamsライブキャプションを第一候補の文字入力とする
 
-- Status: Accepted（Issue #16、2026-08-28。対象PCでの実会議品質は手動試験で継続評価）
+- Status: Superseded by ADR-0010（Teams OCRはZoom RTMSを利用できない会議のfallbackとして継続）
 - Source: Issue #17
 - Reassesses: ADR-0002, ADR-0003
 

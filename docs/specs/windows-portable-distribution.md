@@ -20,7 +20,7 @@ Zoom RTMS入力を使う場合は、各PCで次を実行し、Zoom General App�
 powershell -ExecutionPolicy Bypass -File scripts/setup-zoom-rtms.ps1
 ```
 
-Zoom MarketplaceのWebhook URLには、利用者が用意した一時HTTPS tunnelから`http://127.0.0.1:43118/zoom/webhook`だけへ転送するURLを設定します。43117または3000をtunnelへ公開しないでください。Tunnelはアプリに同梱せず、自動起動もしません。Zoom側にはDeveloper Pack、`meeting:read:meeting_transcript` scopeとRTMS event subscriptionが別途必要です。
+Zoom MarketplaceのWebhook URLには、利用者が用意した一時HTTPS tunnelから`http://127.0.0.1:43118/zoom/webhook`だけへ転送するURLを設定します。43117または3000をtunnelへ公開しないでください。Tunnelはアプリに同梱せず、自動起動もしません。Zoom側にはDeveloper Pack、`meeting:read:meeting_transcript` scopeとRTMS event subscriptionが別途必要です。全参加者同意後に「Zoom RTMSを待機」を押し、signed stream検出後60秒以内に「検出したZoom streamを接続」で第二確認します。
 
 現時点のポータブルZIPはOCR-firstテスト用であり、local Whisper modelを含みません。したがって音声fallbackはmodelを別途明示導入するまで`UNAVAILABLE (optional)`と表示されます。Teams字幕OCRは全参加者の同意後、「Teams字幕OCRを開始」で字幕本文と発話者だけを含む矩形を選択してください。画像と生音声は保存しません。
 

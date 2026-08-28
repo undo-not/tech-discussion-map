@@ -15,6 +15,10 @@ function exactKeys(value, expected) {
   return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
 }
 
+function hasRequiredKeys(value, required) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && required.every((key) => Object.hasOwn(value, key));
+}
+
 function parseJsonBuffer(value, maximumBytes) {
   if (!Buffer.isBuffer(value) || value.length === 0 || value.length > maximumBytes) throw new Error('zoom-payload-out-of-bounds');
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value));
@@ -53,31 +57,32 @@ function socketText(data) {
 
 function validateStartedPayload(payload) {
   const expected = ['account_id', 'is_original_host', 'meeting_id', 'meeting_uuid', 'operator_id', 'rtms_stream_id', 'server_urls'];
-  if (!exactKeys(payload, expected) || !boundedOpaque(payload.meeting_uuid) || !boundedOpaque(payload.rtms_stream_id) ||
+  if (!hasRequiredKeys(payload, expected) || !boundedOpaque(payload.meeting_uuid) || !boundedOpaque(payload.rtms_stream_id) ||
       !boundedOpaque(payload.meeting_id) || !boundedOpaque(payload.account_id) || !boundedOpaque(payload.operator_id) ||
       typeof payload.is_original_host !== 'boolean' || typeof payload.server_urls !== 'string') throw new Error('invalid-zoom-started-event');
   zoomWebSocketUrl(payload.server_urls);
-  return payload;
+  return { meeting_uuid: payload.meeting_uuid, rtms_stream_id: payload.rtms_stream_id, server_urls: payload.server_urls };
 }
 
 function validateStoppedPayload(payload) {
-  if (!exactKeys(payload, ['meeting_uuid', 'rtms_stream_id', 'stop_reason']) || !boundedOpaque(payload.meeting_uuid) ||
+  if (!hasRequiredKeys(payload, ['meeting_uuid', 'rtms_stream_id', 'stop_reason']) || !boundedOpaque(payload.meeting_uuid) ||
       !boundedOpaque(payload.rtms_stream_id) || !Number.isSafeInteger(payload.stop_reason)) throw new Error('invalid-zoom-stopped-event');
-  return payload;
+  return { meeting_uuid: payload.meeting_uuid, rtms_stream_id: payload.rtms_stream_id, stop_reason: payload.stop_reason };
 }
 
 function validateInterruptedPayload(payload) {
-  const keys = Object.keys(payload ?? {}).sort();
-  const expected = keys.includes('server_urls') ? ['meeting_uuid', 'rtms_stream_id', 'server_urls'] : ['meeting_uuid', 'rtms_stream_id'];
-  if (!exactKeys(payload, expected) || !boundedOpaque(payload.meeting_uuid) || !boundedOpaque(payload.rtms_stream_id) ||
+  if (!hasRequiredKeys(payload, ['meeting_uuid', 'rtms_stream_id']) || !boundedOpaque(payload.meeting_uuid) || !boundedOpaque(payload.rtms_stream_id) ||
       (payload.server_urls !== undefined && typeof payload.server_urls !== 'string')) throw new Error('invalid-zoom-interrupted-event');
   if (payload.server_urls !== undefined) zoomWebSocketUrl(payload.server_urls);
-  return payload;
+  return {
+    meeting_uuid: payload.meeting_uuid, rtms_stream_id: payload.rtms_stream_id,
+    ...(payload.server_urls === undefined ? {} : { server_urls: payload.server_urls }),
+  };
 }
 
 function validateBrowserEvent(value) {
   if (value?.type === 'state') {
-    if (!exactKeys(value, ['reason', 'state', 'type']) || !['waiting', 'connecting', 'active', 'paused', 'degraded', 'stopped'].includes(value.state) ||
+    if (!exactKeys(value, ['reason', 'state', 'type']) || !['waiting', 'awaiting-confirmation', 'connecting', 'active', 'paused', 'degraded', 'stopped'].includes(value.state) ||
         typeof value.reason !== 'string' || value.reason.length === 0 || value.reason.length > 64) throw new Error('invalid-zoom-browser-state');
     return structuredClone(value);
   }
@@ -134,7 +139,9 @@ export function createZoomRtmsController(options) {
 
   const stopSession = (session, emitState = false, reason = 'user-stopped') => {
     if (session.stopped) return;
-    if (session.armTimer) clearTimeout(session.armTimer);
+    if (session.armTimer) { clearTimeout(session.armTimer); session.armTimer = null; }
+    if (session.confirmationTimer) { clearTimeout(session.confirmationTimer); session.confirmationTimer = null; }
+    session.pendingPayload = null;
     closeSocket(session.mediaSocket);
     closeSocket(session.signalingSocket);
     session.mediaSocket = null;
@@ -142,20 +149,19 @@ export function createZoomRtmsController(options) {
     session.aliases.clear();
     session.aliasSalt = '';
     session.seenPackets.clear();
-    session.events.length = 0;
-    session.stopped = true;
     session.state = 'stopped';
     session.generation += 1;
-    if (emitState) {
-      session.stopped = false;
-      pushState(session, 'stopped', reason);
-      session.stopped = true;
-    }
+    if (emitState) pushState(session, 'stopped', reason);
+    else session.events.length = 0;
+    session.stopped = true;
     setTimeout(() => sessions.delete(session.id), 60_000).unref?.();
   };
 
   const degrade = (session, reason) => {
     if (session.stopped) return;
+    if (session.armTimer) { clearTimeout(session.armTimer); session.armTimer = null; }
+    if (session.confirmationTimer) { clearTimeout(session.confirmationTimer); session.confirmationTimer = null; }
+    session.pendingPayload = null;
     closeSocket(session.mediaSocket);
     closeSocket(session.signalingSocket);
     session.mediaSocket = null;
@@ -173,7 +179,7 @@ export function createZoomRtmsController(options) {
 
   const transcriptUtterance = (session, content) => {
     const expected = ['data', 'end_time', 'language', 'start_time', 'timestamp', 'user_id', 'user_name'];
-    if (!exactKeys(content, expected) || !boundedOpaque(content.user_id) || typeof content.user_name !== 'string' || content.user_name.length > 512 ||
+    if (!hasRequiredKeys(content, expected) || !boundedOpaque(content.user_id) || typeof content.user_name !== 'string' || content.user_name.length > 512 ||
         !Number.isSafeInteger(content.start_time) || !Number.isSafeInteger(content.end_time) || content.end_time < content.start_time ||
         !Number.isSafeInteger(content.timestamp) || !Number.isSafeInteger(content.language) || typeof content.data !== 'string') {
       throw new Error('invalid-zoom-transcript-packet');
@@ -289,6 +295,7 @@ export function createZoomRtmsController(options) {
         id, state: 'waiting', stopped: false, paused: false, stateBeforePause: 'waiting', bound: false, armedUntil: now() + armedSessionLifetimeMs,
         generation: 0, cursor: 0, events: [], aliases: new Map(), seenPackets: new Set(), originMs: null,
         utteranceSequence: 0, signalingSocket: null, mediaSocket: null, streamKey: '', aliasSalt: randomUUID(), armTimer: null,
+        pendingPayload: null, confirmationTimer: null,
       };
       session.armTimer = setTimeout(() => {
         if (!session.stopped && !session.bound) degrade(session, 'arm-expired');
@@ -301,7 +308,21 @@ export function createZoomRtmsController(options) {
       const session = sessions.get(id);
       if (!session) throw new Error('zoom-session-not-found');
       if (!Number.isSafeInteger(after) || after < 0) throw new Error('invalid-zoom-event-cursor');
-      return { cursor: session.cursor, events: session.events.filter((event) => event.cursor > after).map((event) => structuredClone(event.value)), state: session.state, stopped: session.stopped };
+      if (after > session.cursor) throw new Error('invalid-zoom-event-cursor');
+      session.events = session.events.filter((event) => event.cursor > after);
+      return { cursor: session.cursor, events: session.events.map((event) => structuredClone(event.value)), state: session.state, stopped: session.stopped };
+    },
+    confirm(id) {
+      const session = sessions.get(id);
+      if (!session || session.stopped || session.state !== 'awaiting-confirmation' || !session.pendingPayload) throw new Error('zoom-stream-not-awaiting-confirmation');
+      const payload = session.pendingPayload;
+      session.pendingPayload = null;
+      if (session.confirmationTimer) { clearTimeout(session.confirmationTimer); session.confirmationTimer = null; }
+      session.bound = true;
+      if (session.armTimer) { clearTimeout(session.armTimer); session.armTimer = null; }
+      session.state = 'waiting';
+      void connect(session, payload).catch(() => degrade(session, 'rtms-connection-failed'));
+      return { state: 'connecting' };
     },
     pause(id) {
       const session = sessions.get(id);
@@ -339,11 +360,11 @@ export function createZoomRtmsController(options) {
       let event;
       try { event = parseJsonBuffer(body, maximumWebhookBytes); }
       catch { return { status: 400, body: { error: 'invalid-zoom-webhook-json' } }; }
-      if (!exactKeys(event, ['event', 'event_ts', 'payload']) || typeof event.event !== 'string' || !Number.isSafeInteger(event.event_ts)) {
+      if (!hasRequiredKeys(event, ['event', 'event_ts', 'payload']) || typeof event.event !== 'string' || !Number.isSafeInteger(event.event_ts)) {
         return { status: 400, body: { error: 'invalid-zoom-webhook-event' } };
       }
       if (event.event === 'endpoint.url_validation') {
-        if (!exactKeys(event.payload, ['plainToken']) || typeof event.payload.plainToken !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(event.payload.plainToken)) {
+        if (!hasRequiredKeys(event.payload, ['plainToken']) || typeof event.payload.plainToken !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(event.payload.plainToken)) {
           return { status: 400, body: { error: 'invalid-zoom-url-validation' } };
         }
         try { return { status: 200, body: { plainToken: event.payload.plainToken, encryptedToken: await credentials.signUrlValidation(event.payload.plainToken) } }; }
@@ -353,13 +374,25 @@ export function createZoomRtmsController(options) {
         let payload;
         try { payload = validateStartedPayload(event.payload); }
         catch { return { status: 400, body: { error: 'invalid-zoom-started-event' } }; }
+        const ambiguous = [...sessions.values()].find((session) => !session.stopped && !session.bound && session.state === 'awaiting-confirmation');
+        if (ambiguous) {
+          ambiguous.pendingPayload = null;
+          if (ambiguous.confirmationTimer) { clearTimeout(ambiguous.confirmationTimer); ambiguous.confirmationTimer = null; }
+          degrade(ambiguous, 'ambiguous-start-events');
+          return { status: 200, body: { status: 'ambiguous' } };
+        }
         const waiting = [...sessions.values()].find((session) => !session.stopped && !session.bound && session.state === 'waiting' && session.armedUntil >= now());
         if (waiting) {
-          waiting.bound = true;
-          if (waiting.armTimer) { clearTimeout(waiting.armTimer); waiting.armTimer = null; }
-          void connect(waiting, payload).catch(() => degrade(waiting, 'rtms-connection-failed'));
+          waiting.pendingPayload = payload;
+          pushState(waiting, 'awaiting-confirmation', 'signed-stream-awaiting-confirmation');
+          waiting.confirmationTimer = setTimeout(() => {
+            waiting.pendingPayload = null;
+            waiting.confirmationTimer = null;
+            if (!waiting.stopped && !waiting.bound) degrade(waiting, 'stream-confirmation-expired');
+          }, 60_000);
+          waiting.confirmationTimer.unref?.();
         }
-        return { status: 200, body: { status: waiting ? 'accepted' : 'not-armed' } };
+        return { status: 200, body: { status: waiting ? 'awaiting-confirmation' : 'not-armed' } };
       }
       if (event.event === 'meeting.rtms_interrupted') {
         let payload;

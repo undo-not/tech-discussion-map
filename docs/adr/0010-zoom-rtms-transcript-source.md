@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-08-28
 - Issue: #31
+- Reassesses: ADR-0007
 
 ## Context
 
@@ -10,7 +11,7 @@ Teams字幕OCRはWindows local-only境界を保てる一方、画面layout、DPI
 
 ## Decision
 
-Zoom RTMSのtranscript media type 8だけを追加し、Teams経路はfallbackとして残す。利用者の明示armを15分・one-shotで行い、Zoom started eventを任意会議へ自動bindしない。
+Zoom RTMSのtranscript media type 8だけを追加し、Teams経路はfallbackとして残す。利用者の明示armを15分・one-shotで行う。署名済みstarted eventを検出しても接続せず、60秒以内の第二の利用者操作で確認してからbindする。確認待ちに別started eventを検出した場合は曖昧としてfail closedする。
 
 公開tunnelの転送先は1 routeだけを持つ`127.0.0.1:43118`の専用Webhook listenerとする。Host／Origin／bearerで守られたbrowser companion `127.0.0.1:43117`とはprocess内でcontrollerを共有してもHTTP surfaceを共有しない。
 
