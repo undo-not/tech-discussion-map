@@ -29,6 +29,7 @@ test('portable launcher verifies every packaged file before offline OCR setup an
   ]);
   assert.match(portable, /Get-FileHash[\s\S]*Portable package hash verification failed/);
   assert.match(portable, /Portable package contains files that are not covered by its manifest/);
+  assert.match(portable, /-Recurse -Force -File/);
   assert.match(portable, /if \(-not \(Test-Path -LiteralPath \$localOcr\)\)/);
   assert.doesNotMatch(portable, /-Replace/);
   assert.match(portable, /TECHMAP_PORTABLE_ROOT/);
@@ -36,6 +37,16 @@ test('portable launcher verifies every packaged file before offline OCR setup an
   assert.match(mvp, /HOST = '127\.0\.0\.1'/);
   assert.match(mvp, /PORT = '3000'/);
   assert.match(config, /TECHMAP_STANDALONE_BUILD === '1' \? 'standalone' : undefined/);
+});
+
+test('portable smoke executes the documented cmd entry point and fetches client assets', async () => {
+  const smoke = await read('scripts/test-portable-package.ps1');
+  assert.match(smoke, /extract path with spaces/);
+  assert.match(smoke, /Start-Process \$env:ComSpec/);
+  assert.match(smoke, /TechMapLive\.cmd/);
+  assert.match(smoke, /_next\/static/);
+  assert.match(smoke, /pcm-capture-worklet\.js/);
+  assert.match(smoke, /FileAttributes\]::Hidden/);
 });
 
 test('portable workflow keeps provenance privilege separate from the build job', async () => {

@@ -80,7 +80,7 @@ try {
   $companion = Start-OwnedProcess $repositoryRoot @($companionEntry) @{
     TECHMAP_LAUNCH_SECRET = $launchSecret
   }
-  if (Test-Path -LiteralPath $standaloneServer -PathType Leaf) {
+  if ($env:TECHMAP_PORTABLE_ROOT) {
     $web = Start-OwnedProcess (Split-Path -Parent $standaloneServer) @($standaloneServer) @{
       HOST = '127.0.0.1'
       PORT = '3000'

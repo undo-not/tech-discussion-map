@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $zipPath = (Resolve-Path -LiteralPath $PackageZip).Path
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('techmap-portable-test-' + [Guid]::NewGuid().ToString('N'))
-$extractRoot = Join-Path $testRoot 'extract'
+$extractRoot = Join-Path $testRoot 'extract path with spaces'
 $localAppData = Join-Path $testRoot 'local-app-data'
 $stdoutPath = Join-Path $testRoot 'stdout.log'
 $stderrPath = Join-Path $testRoot 'stderr.log'
@@ -22,8 +22,9 @@ function Wait-Http([string]$Uri, [System.Diagnostics.Process]$Process) {
     if ($Process.HasExited) { throw "Portable launcher exited during smoke test with code $($Process.ExitCode)." }
     try {
       $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 2
-      if ($response.StatusCode -eq 200) { return }
-    } catch { Start-Sleep -Milliseconds 250 }
+      if ($response.StatusCode -eq 200) { return $response }
+    } catch {}
+    Start-Sleep -Milliseconds 250
   }
   throw "Timed out waiting for $Uri"
 }
@@ -46,12 +47,14 @@ try {
   if ($packageRoots.Count -ne 1) { throw 'Portable ZIP must contain exactly one top-level directory.' }
   $packageRoot = $packageRoots[0].FullName
   $startPortable = Join-Path $packageRoot 'scripts\start-portable.ps1'
+  $cmdLauncher = Join-Path $packageRoot 'TechMapLive.cmd'
   $env:LOCALAPPDATA = $localAppData
   $env:TECHMAP_NO_BROWSER = '1'
   $env:Path = "$(Join-Path $env:SystemRoot 'System32');$env:SystemRoot"
 
   $unexpected = Join-Path $packageRoot 'meeting-session.json'
   [IO.File]::WriteAllText($unexpected, '{}', [Text.Encoding]::ASCII)
+  (Get-Item -LiteralPath $unexpected).Attributes = [IO.FileAttributes]::Hidden
   Assert-VerificationFailure 'Portable package contains files that are not covered by its manifest.'
   Remove-Item -LiteralPath $unexpected -Force
 
@@ -77,9 +80,14 @@ try {
     throw 'Portable first-run OCR installation was not created under isolated LocalAppData.'
   }
 
-  $launcher = Start-Process $powerShellPath -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $startPortable, '-NoBrowser') `
+  $cmdArguments = '/d /c ""' + $cmdLauncher + '""'
+  $launcher = Start-Process $env:ComSpec -ArgumentList $cmdArguments `
     -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-  Wait-Http 'http://127.0.0.1:3000/' $launcher
+  $page = Wait-Http 'http://127.0.0.1:3000/' $launcher
+  $assetMatch = [regex]::Match($page.Content, '(?:src|href)="(?<path>/_next/static/[^"]+)"')
+  if (-not $assetMatch.Success) { throw 'Portable UI did not reference a built client asset.' }
+  [void](Wait-Http ("http://127.0.0.1:3000" + $assetMatch.Groups['path'].Value) $launcher)
+  [void](Wait-Http 'http://127.0.0.1:3000/pcm-capture-worklet.js' $launcher)
   Write-Output 'Portable loopback UI smoke test: PASS'
 } finally {
   if ($null -ne $launcher -and -not $launcher.HasExited) { & taskkill.exe /PID $launcher.Id /T /F 2>$null | Out-Null }

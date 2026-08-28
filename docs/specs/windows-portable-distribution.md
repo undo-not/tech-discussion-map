@@ -2,7 +2,9 @@
 
 ## 利用者向け手順
 
-対象は64-bit Windows 10/11です。`TechMapLive-windows-x64.zip`をローカルディスクへ保存し、右クリックの「すべて展開」で展開してから、展開先の`TechMapLive\TechMapLive.cmd`をダブルクリックします。管理者権限、Node.js、pnpm、Git、GitHub CLI、Visual Studio、CMakeは不要です。ZIP内から直接起動しないでください。
+対象は64-bit Windows 10/11です。`TechMapLive-windows-x64.zip`をローカルディスクへ保存し、右クリックの「すべて展開」で展開してから、展開先の`TechMapLive\TechMapLive.cmd`をダブルクリックします。Windows PowerShell 5.1の長いpath制限を避けるため、`C:\TechMapLive-Test`のような短い展開先を使い、ZIP内から直接起動しないでください。管理者権限、Node.js、pnpm、Git、GitHub CLI、Visual Studio、CMakeは不要です。
+
+本パッケージは未署名のため、インターネットから取得したfileとしてWindowsの警告やSmartScreenが表示される場合があります。main artifactのattestationとSHA-256を検証した場合だけ、Windowsの「詳細情報」から実行してください。組織ポリシーが未署名アプリまたはPowerShellを禁止しているPCでは回避せず、管理者へ配布許可またはcode signingを依頼してください。`-ExecutionPolicy Bypass`はGroup Policyを上書きしません。
 
 初回起動は同梱ファイルをSHA-256で検査し、固定されたTesseract 5.5.3と日本語・英語モデルを`%LOCALAPPDATA%\TechMapLive\ocr\current`へコピーします。既存のOCR directoryがある場合は自動置換しません。既存内容が壊れている場合はfail closedし、利用者が退避または削除してから再実行する必要があります。起動後はブラウザーで`http://127.0.0.1:3000/`を開きます。終了は起動したconsoleでCtrl+Cを押します。
 

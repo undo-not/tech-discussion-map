@@ -35,7 +35,7 @@ function Assert-PortableManifest {
     if ($actual -ne [string]$entry.sha256) { throw "Portable package hash verification failed: $relativePath" }
   }
 
-  $actualFiles = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File | ForEach-Object {
+  $actualFiles = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -Force -File | ForEach-Object {
     $_.FullName.Substring($packageRoot.Length + 1).Replace('\', '/')
   } | Where-Object { $_ -ne 'techmap-portable.manifest.json' })
   if ($actualFiles.Count -ne $seen.Count -or ($actualFiles | Where-Object { -not $seen.Contains($_) }).Count -ne 0) {
