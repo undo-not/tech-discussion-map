@@ -36,6 +36,12 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 
 ## Windows MVPを試す
 
+### 別PCでポータブル版を試す
+
+`Windows portable package` workflowのartifact `TechMapLive-windows-x64`をダウンロードし、ZIPを「すべて展開」して`TechMapLive\TechMapLive.cmd`をダブルクリックします。Node.js、pnpm、Git、GitHub CLI、Visual Studio/CMake、管理者権限は不要です。固定Node.js、native helper、検証済みTesseract日本語・英語OCRを同梱し、初回起動時に改変検査を行います。会議data、API key、保存session、Whisper modelは同梱しません。詳しい導入、attestation検証、別PCでの確認項目は[Windowsポータブル配布仕様](docs/specs/windows-portable-distribution.md)を参照してください。
+
+### sourceからbuildして試す
+
 最初にVisual Studio Build Tools、Windows SDK、CMake、Node.js 22.18以降、pnpmを用意し、native helperとweb appを一括buildします。transcription helperの初回buildは固定commitのwhisper.cppを取得するためnetworkを使います。
 
 Node.jsが未導入の場合は、公式winget packageを導入します。install完了後はPATHを反映するためPowerShellを閉じ、新しいPowerShellで`node --version`が22.18以降であることを確認してください。
