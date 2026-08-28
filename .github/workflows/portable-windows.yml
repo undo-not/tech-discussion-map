@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/portable-windows.yml'
+      - '.gitattributes'
       - 'TechMapLive.cmd'
       - 'app/**'
       - 'companion/**'
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/portable-windows.yml'
+      - '.gitattributes'
       - 'TechMapLive.cmd'
       - 'app/**'
       - 'companion/**'

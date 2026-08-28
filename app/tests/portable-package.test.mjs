@@ -41,12 +41,13 @@ test('portable launcher verifies every packaged file before offline OCR setup an
 
 test('portable smoke executes the documented cmd entry point and fetches client assets', async () => {
   const smoke = await read('scripts/test-portable-package.ps1');
-  assert.match(smoke, /extract path with spaces/);
+  assert.match(smoke, /Join-Path \$testRoot 'x y'/);
   assert.match(smoke, /Start-Process \$env:ComSpec/);
   assert.match(smoke, /TechMapLive\.cmd/);
   assert.match(smoke, /_next\/static/);
   assert.match(smoke, /pcm-capture-worklet\.js/);
   assert.match(smoke, /FileAttributes\]::Hidden/);
+  assert.match(smoke, /Portable launcher diagnostic/);
 });
 
 test('portable workflow keeps provenance privilege separate from the build job', async () => {

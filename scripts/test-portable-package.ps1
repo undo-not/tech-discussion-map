@@ -5,8 +5,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $zipPath = (Resolve-Path -LiteralPath $PackageZip).Path
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('techmap-portable-test-' + [Guid]::NewGuid().ToString('N'))
-$extractRoot = Join-Path $testRoot 'extract path with spaces'
+$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('tml-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$extractRoot = Join-Path $testRoot 'x y'
 $localAppData = Join-Path $testRoot 'local-app-data'
 $stdoutPath = Join-Path $testRoot 'stdout.log'
 $stderrPath = Join-Path $testRoot 'stderr.log'
@@ -15,6 +15,7 @@ $launcher = $null
 $originalLocalAppData = $env:LOCALAPPDATA
 $originalNoBrowser = $env:TECHMAP_NO_BROWSER
 $originalPath = $env:Path
+$testSucceeded = $false
 
 function Wait-Http([string]$Uri, [System.Diagnostics.Process]$Process) {
   $deadline = [DateTime]::UtcNow.AddSeconds(45)
@@ -89,8 +90,17 @@ try {
   [void](Wait-Http ("http://127.0.0.1:3000" + $assetMatch.Groups['path'].Value) $launcher)
   [void](Wait-Http 'http://127.0.0.1:3000/pcm-capture-worklet.js' $launcher)
   Write-Output 'Portable loopback UI smoke test: PASS'
+  $testSucceeded = $true
 } finally {
   if ($null -ne $launcher -and -not $launcher.HasExited) { & taskkill.exe /PID $launcher.Id /T /F 2>$null | Out-Null }
+  if (-not $testSucceeded) {
+    foreach ($log in @($stdoutPath, $stderrPath)) {
+      if (Test-Path -LiteralPath $log -PathType Leaf) {
+        Write-Output "Portable launcher diagnostic: $(Split-Path -Leaf $log)"
+        Get-Content -LiteralPath $log -ErrorAction SilentlyContinue
+      }
+    }
+  }
   $env:LOCALAPPDATA = $originalLocalAppData
   $env:TECHMAP_NO_BROWSER = $originalNoBrowser
   $env:Path = $originalPath

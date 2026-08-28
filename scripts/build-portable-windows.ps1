@@ -62,8 +62,13 @@ try {
   if ($actualArchiveHash -ne $nodeArchiveSha256) { throw 'Pinned Node.js archive SHA-256 verification failed.' }
   Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot
   $nodeSource = Join-Path $extractRoot "node-v$nodeVersion-win-x64"
-  $versionOutput = (& (Join-Path $nodeSource 'node.exe') --version 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0 -or $versionOutput -ne "v$nodeVersion") { throw "Pinned Node.js runtime version verification failed: $versionOutput" }
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $versionOutput = (& (Join-Path $nodeSource 'node.exe') --version 2>&1 | Out-String).Trim()
+    $versionExitCode = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $previousPreference }
+  if ($versionExitCode -ne 0 -or $versionOutput -ne "v$nodeVersion") { throw "Pinned Node.js runtime version verification failed: $versionOutput" }
 
   New-Item -ItemType Directory -Path $outputRoot | Out-Null
   Copy-PortableLeaf (Join-Path $repositoryRoot 'TechMapLive.cmd') 'TechMapLive.cmd'

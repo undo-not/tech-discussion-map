@@ -61,8 +61,13 @@ function Get-TechMapLocalAppData {
 [void](Assert-PortableManifest)
 $nodeRoot = Join-Path $packageRoot 'runtime\node'
 $nodePath = Join-Path $nodeRoot 'node.exe'
-$nodeVersion = (& $nodePath --version 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $nodeVersion -ne 'v22.23.2') { throw "Bundled Node.js version verification failed: $nodeVersion" }
+$previousPreference = $ErrorActionPreference
+try {
+  $ErrorActionPreference = 'Continue'
+  $nodeVersion = (& $nodePath --version 2>&1 | Out-String).Trim()
+  $nodeExitCode = $LASTEXITCODE
+} finally { $ErrorActionPreference = $previousPreference }
+if ($nodeExitCode -ne 0 -or $nodeVersion -ne 'v22.23.2') { throw "Bundled Node.js version verification failed: $nodeVersion" }
 
 $ocrSource = Join-Path $packageRoot 'runtime\ocr'
 $ocrBuildManifestPath = Join-Path $ocrSource 'techmap-ocr-build.manifest'
