@@ -18,6 +18,16 @@ function Test-PortAvailable([int]$Port) {
   try { $listener.Start(); return $true } catch { return $false } finally { $listener.Stop() }
 }
 
+function New-NodeSetupMessage([string]$Reason) {
+  return @"
+$Reason
+TechMap Live requires Node.js 22.18 or later.
+Install the official Node.js LTS package with:
+  winget install --id OpenJS.NodeJS.LTS --exact
+Then close this PowerShell window, open a new one, and run scripts\start-mvp.ps1 again.
+"@.Trim()
+}
+
 if ($ContractOnly) {
   foreach ($scriptName in @('build-mvp.ps1', 'build-tesseract-runtime.ps1', 'install-attested-tesseract.ps1', 'preflight-mvp.ps1', 'start-mvp.ps1')) {
     $scriptPath = Join-Path $PSScriptRoot $scriptName
@@ -32,15 +42,28 @@ if ($ContractOnly) {
   foreach ($requiredPattern in @('Set-WebLaunchSecret \$launchSecret', "Start-Process 'http://127\.0\.0\.1:3000/'", "@\(\`$webCli, 'start', '--hostname', '127\.0\.0\.1', '--port', '3000'\)", 'taskkill\.exe /PID \$Process\.Id /T /F')) {
     if ($startSource -notmatch $requiredPattern) { throw "MVP launcher behavior is missing: $requiredPattern" }
   }
+  foreach ($reason in @('Node.js was not found on PATH.', 'The installed Node.js version is unsupported: v20.0.0')) {
+    $message = New-NodeSetupMessage $reason
+    foreach ($requiredText in @('Node.js 22.18 or later', 'winget install --id OpenJS.NodeJS.LTS --exact', 'close this PowerShell window, open a new one')) {
+      if ($message -notmatch [regex]::Escape($requiredText)) { throw "Node.js recovery guidance is missing: $requiredText" }
+    }
+  }
   Write-Output 'MVP launcher contract: PASS'
   exit 0
 }
 
 if ($env:OS -ne 'Windows_NT') { throw 'TechMap Live MVP runtime supports Windows only.' }
-$node = Get-Command node -ErrorAction Stop
-$nodeVersion = (& $node.Source --version).TrimStart('v').Split('.')
-if ([int]$nodeVersion[0] -lt 22 -or ([int]$nodeVersion[0] -eq 22 -and [int]$nodeVersion[1] -lt 18)) {
-  throw 'Node.js 22.18 or later is required.'
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($null -eq $node) {
+  throw (New-NodeSetupMessage 'Node.js was not found on PATH.')
+}
+$nodeVersionText = (& $node.Source --version).Trim()
+$nodeVersion = $null
+if ($LASTEXITCODE -ne 0 -or $nodeVersionText -notmatch '^v(?<version>\d+\.\d+\.\d+)$' -or -not [Version]::TryParse($matches.version, [ref]$nodeVersion)) {
+  throw (New-NodeSetupMessage "The Node.js version could not be verified: $nodeVersionText")
+}
+if ($nodeVersion -lt [Version]'22.18.0') {
+  throw (New-NodeSetupMessage "The installed Node.js version is unsupported: $nodeVersionText")
 }
 
 $required = @(

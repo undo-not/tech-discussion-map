@@ -38,6 +38,13 @@ pnpm run dev --hostname 127.0.0.1 --port 3000
 
 最初にVisual Studio Build Tools、Windows SDK、CMake、Node.js 22.18以降、pnpmを用意し、native helperとweb appを一括buildします。transcription helperの初回buildは固定commitのwhisper.cppを取得するためnetworkを使います。
 
+Node.jsが未導入の場合は、公式winget packageを導入します。install完了後はPATHを反映するためPowerShellを閉じ、新しいPowerShellで`node --version`が22.18以降であることを確認してください。
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS --exact
+node --version
+```
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-mvp.ps1
 ```
