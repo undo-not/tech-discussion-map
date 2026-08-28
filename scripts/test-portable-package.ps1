@@ -29,8 +29,13 @@ function Wait-Http([string]$Uri, [System.Diagnostics.Process]$Process) {
 }
 
 function Assert-VerificationFailure([string]$ExpectedText) {
-  $output = @(& $powerShellPath -NoProfile -ExecutionPolicy Bypass -File $startPortable -VerifyOnly 2>&1)
-  if ($LASTEXITCODE -eq 0) { throw "Tampered portable fixture unexpectedly passed: $ExpectedText" }
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $output = @(& $powerShellPath -NoProfile -ExecutionPolicy Bypass -File $startPortable -VerifyOnly 2>&1)
+    $verificationExitCode = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $previousPreference }
+  if ($verificationExitCode -eq 0) { throw "Tampered portable fixture unexpectedly passed: $ExpectedText" }
   if (($output | Out-String) -notmatch [regex]::Escape($ExpectedText)) { throw "Tampered portable fixture did not fail for the expected reason: $ExpectedText" }
 }
 
@@ -56,6 +61,15 @@ try {
     [IO.File]::AppendAllText($tamperTarget, 'tampered', [Text.Encoding]::ASCII)
     Assert-VerificationFailure 'Portable package size verification failed: runtime/node/node-provenance.json'
   } finally { [IO.File]::WriteAllBytes($tamperTarget, $originalBytes) }
+
+  $missingTarget = Join-Path $packageRoot 'runtime\node\LICENSE.txt'
+  $missingBackup = Join-Path $testRoot 'node-license.backup'
+  try {
+    Move-Item -LiteralPath $missingTarget -Destination $missingBackup
+    Assert-VerificationFailure 'Portable package file is missing or outside the package: runtime/node/LICENSE.txt'
+  } finally {
+    if (Test-Path -LiteralPath $missingBackup -PathType Leaf) { Move-Item -LiteralPath $missingBackup -Destination $missingTarget }
+  }
 
   & $powerShellPath -NoProfile -ExecutionPolicy Bypass -File $startPortable -VerifyOnly
   if ($LASTEXITCODE -ne 0) { throw 'Portable verification-only launch failed.' }
