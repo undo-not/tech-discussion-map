@@ -76,6 +76,13 @@ button { cursor: pointer; }
 .metric b { font-size: 14px; }
 .metric span { font-size: 11px; color: #52615c; }
 
+.workspace-change-once { animation: workspace-change 900ms ease-out 1; }
+@keyframes workspace-change {
+  0% { box-shadow: 0 0 0 0 rgba(216, 154, 49, .65); background-color: #fff4ce; }
+  48% { box-shadow: 0 0 0 7px rgba(216, 154, 49, .18); }
+  100% { box-shadow: 0 0 0 0 rgba(216, 154, 49, 0); }
+}
+
 @media (max-width: 1180px) {
   .node-mvp { left: 4%; } .node-quality { left: 3%; } .node-teams { right: 3%; } .node-privacy { right: 3%; }
 }

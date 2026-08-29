@@ -46,9 +46,10 @@ export type CapturePanelProps = {
   getAnalysisState: () => AnalysisState;
   onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean; resetLayout?: boolean }) => void;
   onTranscriptChange?: (state: TranscriptState) => void;
+  presentationMode?: boolean;
 };
 
-export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange }: CapturePanelProps) {
+export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange, presentationMode = false }: CapturePanelProps) {
   const localRuntime = useSyncExternalStore(subscribeRuntime, () => isLoopbackRuntime(window.location), () => false);
   const [sessionState, dispatch] = useReducer((state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event), 'idle');
   const [devices, setDevices] = useState<MicrophoneDevice[]>([]);
@@ -773,7 +774,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   }
 
   return (
-    <section aria-label="会議入力" className="border-b border-[#d9ded8] bg-[#eef3ef] px-4 py-3 md:px-6">
+    <section aria-label="会議入力" className={`border-b border-[#d9ded8] bg-[#eef3ef] px-4 md:px-6 ${presentationMode ? 'py-2' : 'py-3'}`}>
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-2 pb-2 text-xs">
         <span className={`rounded-full px-3 py-1 font-bold ${realCapture ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {realCapture ? sessionState === 'paused' ? 'PAUSED' : 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
@@ -796,7 +797,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           {!inputBusy && <button onClick={() => void startDemo()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}
         </div>
       </div>
-      <div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs">
+      {!presentationMode && <><div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs">
         <b>推奨: Teams字幕OCR</b>
         <span>Teams側の認識文と表示話者を利用します。音声フォールバックはOCRが使えない場合だけ、診断と開始を別々に明示操作してください。</span>
         {!inputBusy && <button disabled={!localRuntime || !consentConfirmed || teamsAudioProbeBusy} onClick={() => void probeTeamsAudioFallback()} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">{teamsAudioProbeBusy ? 'Teams音声を診断中' : 'Teams音声を診断'}</button>}
@@ -841,7 +842,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
             <p>削除はlocal encrypted session全体が対象です。明示exportは別copyなので個別削除が必要です。OpenAI送信後の保持はlocal削除では取り消せません。外部model停止・refusal・不正schema時はdeltaを適用せずlocal workspaceを維持します。</p>
           </div>
         </div>
-      </details>
+      </details></>}
     </section>
   );
 }
