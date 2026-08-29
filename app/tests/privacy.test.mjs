@@ -81,9 +81,11 @@ test('runtime dependencies and URL literals stay within the no-telemetry egress 
   const externalUrls = [];
   for (const file of files) {
     const source = await readFile(file, 'utf8');
-    externalUrls.push(...source.matchAll(/https:\/\/[^'"`\s)]+/g).map((match) => match[0]));
+    externalUrls.push(...source.matchAll(/(?:https|wss):\/\/[^'"`\s)]+/g).map((match) => match[0]));
   }
   assert.deepEqual([...new Set(externalUrls)], ['https://api.openai.com/v1/responses']);
+  const zoomClient = await readFile(new URL('adapters/transcription/local-zoom-rtms-client.ts', appRoot), 'utf8');
+  assert.doesNotMatch(zoomClient, /wss:\/\/|zoom\.us/);
 });
 
 test('privacy store writes only sealed session data and supports retention/delete', async () => {

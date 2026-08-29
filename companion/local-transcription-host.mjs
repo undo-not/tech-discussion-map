@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createPrivacyStore } from './privacy-store.mjs';
 import { attachTeamsAudioBridge, runTeamsAudioProbe } from './teams-audio-bridge.mjs';
+import { createZoomCredentialSigner } from './zoom-credential-signer.mjs';
+import { createZoomRtmsController } from './zoom-rtms-bridge.mjs';
+import { createZoomWebhookServer, defaultZoomWebhookPort, zoomWebhookPath } from './zoom-webhook-host.mjs';
 import { assertPrivacySafeResponsesRequest } from '../app/adapters/privacy/openai-request-policy.ts';
 import { analysisStructuredOutput } from '../app/domain/analysis/schema.ts';
 
@@ -166,6 +169,10 @@ export function createCompanionServer(options = {}) {
   const spawnCaptionWorker = options.spawnCaptionWorker ?? ((args) => spawn(captionWorkerPath, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
   const spawnAudioWorker = options.spawnAudioWorker ?? ((args) => spawn(audioWorkerPath, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }));
   const privacyStore = options.privacyStore ?? createPrivacyStore({ environment });
+  const zoomController = options.zoomController ?? createZoomRtmsController({
+    credentials: options.zoomCredentials ?? createZoomCredentialSigner(),
+    WebSocketImpl: options.WebSocketImpl,
+  });
   const now = options.now ?? Date.now;
   const tokenLifetimeMs = options.tokenLifetimeMs ?? defaultTokenLifetimeMs;
   if (!Number.isSafeInteger(tokenLifetimeMs) || tokenLifetimeMs < 1_000 || tokenLifetimeMs > 24 * 60 * 60 * 1000) throw new Error('invalid-token-lifetime');
@@ -241,6 +248,48 @@ export function createCompanionServer(options = {}) {
     if (request.method === 'GET' && url.pathname === '/v1/privacy/status') {
       try { return sendJson(response, 200, await privacyStore.status(), origin); }
       catch { return sendJson(response, 503, { error: 'privacy-store-unavailable' }, origin); }
+    }
+
+    if (request.method === 'GET' && url.pathname === '/v1/zoom-rtms/status') {
+      try { return sendJson(response, 200, { ...(await zoomController.status()), webhookPath: zoomWebhookPath, webhookPort: defaultZoomWebhookPort }, origin); }
+      catch { return sendJson(response, 503, { error: 'zoom-credential-status-unavailable' }, origin); }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/v1/zoom-rtms-sessions') {
+      const body = await readBody(request, maximumJsonBytes).catch(() => null);
+      let configuration;
+      try { configuration = body && request.headers['content-type'] === 'application/json' ? JSON.parse(body.toString('utf8')) : null; }
+      catch { configuration = null; }
+      if (!configuration || !exactKeys(configuration, ['consentConfirmed']) || configuration.consentConfirmed !== true) {
+        return sendJson(response, 400, { error: 'zoom-rtms-consent-required' }, origin);
+      }
+      try { return sendJson(response, 201, await zoomController.createSession(), origin); }
+      catch (error) {
+        return sendJson(response, error?.message === 'zoom-session-already-active' ? 429 : 503, { error: error?.message ?? 'zoom-session-unavailable' }, origin);
+      }
+    }
+
+    const zoomMatch = /^\/v1\/zoom-rtms-sessions\/([a-f0-9-]{36})(?:\/(events|confirm|pause|resume|stop))?$/.exec(url.pathname);
+    if (zoomMatch) {
+      const action = zoomMatch[2];
+      try {
+        if (request.method === 'GET' && action === 'events') {
+          const after = Number(url.searchParams.get('after') ?? '0');
+          let result = zoomController.getEvents(zoomMatch[1], after);
+          if (result.events.length === 0 && !result.stopped) {
+            await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+            result = zoomController.getEvents(zoomMatch[1], after);
+          }
+          return sendJson(response, 200, result, origin);
+        }
+        if (request.method === 'POST' && action === 'confirm') return sendJson(response, 200, zoomController.confirm(zoomMatch[1]), origin);
+        if (request.method === 'POST' && action === 'pause') return sendJson(response, 200, zoomController.pause(zoomMatch[1]), origin);
+        if (request.method === 'POST' && action === 'resume') return sendJson(response, 200, zoomController.resume(zoomMatch[1]), origin);
+        if (request.method === 'POST' && action === 'stop') return sendJson(response, 200, zoomController.stop(zoomMatch[1]), origin);
+      } catch (error) {
+        return sendJson(response, error?.message === 'invalid-zoom-event-cursor' ? 400 : 404, { error: error?.message ?? 'zoom-session-not-found' }, origin);
+      }
+      return sendJson(response, 404, { error: 'not-found' }, origin);
     }
     if (request.method === 'GET' && url.pathname === '/v1/privacy/sessions') {
       try { return sendJson(response, 200, { sessions: await privacyStore.list() }, origin); }
@@ -576,19 +625,28 @@ export function createCompanionServer(options = {}) {
       if (session.idleTimer) clearTimeout(session.idleTimer);
       session.bridge.stop();
     }
+    zoomController.close();
     sessions.clear();
     captionSessions.clear();
     teamsAudioSessions.clear();
     tokens.clear();
   });
+  server.zoomController = zoomController;
   return server;
 }
 
 export function listen(options = {}) {
   const launchSecret = options.launchSecret ?? randomBytes(32).toString('hex');
   const server = createCompanionServer({ ...options, launchSecret });
+  const zoomController = server.zoomController;
+  const webhookServer = createZoomWebhookServer({ controller: zoomController });
   const port = options.port ?? defaultPort;
+  const webhookPort = options.webhookPort ?? defaultZoomWebhookPort;
   server.listen(port, loopbackHost, () => process.stdout.write(`TechMap local companion ready on http://${loopbackHost}:${port}.\n`));
+  webhookServer.listen(webhookPort, loopbackHost, () => process.stdout.write(`Zoom webhook listener ready on http://${loopbackHost}:${webhookPort}${zoomWebhookPath}.\n`));
+  server.once('close', () => { if (webhookServer.listening) webhookServer.close(); });
+  webhookServer.once('error', () => { if (server.listening) server.close(); });
+  server.webhookServer = webhookServer;
   return server;
 }
 

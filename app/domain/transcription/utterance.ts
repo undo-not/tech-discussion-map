@@ -1,4 +1,4 @@
-export const utteranceSources = ['local', 'remote', 'teams-caption', 'synthetic'] as const;
+export const utteranceSources = ['local', 'remote', 'teams-caption', 'zoom-rtms', 'synthetic'] as const;
 export const utterancePhases = ['partial', 'final'] as const;
 export const speakerLabels = ['self', 'remote-group', 'displayed-alias', 'anonymous', 'unknown'] as const;
 

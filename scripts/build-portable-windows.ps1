@@ -72,7 +72,7 @@ try {
 
   New-Item -ItemType Directory -Path $outputRoot | Out-Null
   Copy-PortableLeaf (Join-Path $repositoryRoot 'TechMapLive.cmd') 'TechMapLive.cmd'
-  foreach ($script in @('preflight-mvp.ps1', 'setup-openai-key.ps1', 'setup-tesseract.ps1', 'start-mvp.ps1', 'start-portable.ps1')) {
+  foreach ($script in @('preflight-mvp.ps1', 'setup-openai-key.ps1', 'setup-zoom-rtms.ps1', 'setup-tesseract.ps1', 'start-mvp.ps1', 'start-portable.ps1')) {
     Copy-PortableLeaf (Join-Path $repositoryRoot "scripts\$script") "scripts\$script"
   }
   Copy-PortableLeaf (Join-Path $repositoryRoot 'docs\specs\windows-portable-distribution.md') 'PORTABLE_README.md'
@@ -80,7 +80,7 @@ try {
   Copy-PortableDirectory (Join-Path $repositoryRoot 'app\dist\standalone') 'app\dist\standalone'
   Copy-PortableDirectory (Join-Path $repositoryRoot 'app\adapters') 'app\adapters'
   Copy-PortableDirectory (Join-Path $repositoryRoot 'app\domain') 'app\domain'
-  foreach ($module in @('local-transcription-host.mjs', 'privacy-store.mjs', 'teams-audio-bridge.mjs')) {
+  foreach ($module in @('local-transcription-host.mjs', 'privacy-store.mjs', 'teams-audio-bridge.mjs', 'zoom-credential-signer.mjs', 'zoom-rtms-bridge.mjs', 'zoom-webhook-host.mjs')) {
     Copy-PortableLeaf (Join-Path $repositoryRoot "companion\$module") "companion\$module"
   }
   foreach ($relative in $nativeFiles) { Copy-PortableLeaf (Join-Path $repositoryRoot $relative) $relative }
@@ -104,8 +104,11 @@ try {
   })
   if ($forbidden.Count -ne 0) { throw "Sensitive/local-only file name rejected from portable package: $($forbidden[0].FullName)" }
   foreach ($file in Get-ChildItem -LiteralPath $outputRoot -Recurse -Force -File) {
-    if ($file.Length -le 2MB -and (Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue) -match 'sk-[A-Za-z0-9_-]{20,}') {
-      throw "OpenAI-style credential pattern rejected from portable package: $($file.FullName)"
+    if ($file.Length -le 2MB) {
+      $content = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue
+      if ($content -match 'sk-[A-Za-z0-9_-]{20,}' -or $content -match '(?im)(?:ZOOM_CLIENT_SECRET|ZM_RTMS_SECRET|ZOOM_WEBHOOK_SECRET)\s*=\s*[^<\s][^\r\n]{15,}') {
+        throw "Credential pattern rejected from portable package: $($file.FullName)"
+      }
     }
   }
 

@@ -5,6 +5,7 @@
 #include <shlobj.h>
 #include <wincred.h>
 #include <winhttp.h>
+#include <bcrypt.h>
 
 #include <fcntl.h>
 #include <io.h>
@@ -25,7 +26,11 @@ constexpr std::size_t MaximumSessionBytes = 8 * 1024 * 1024;
 constexpr std::size_t MaximumCredentialBytes = 512;
 constexpr std::size_t MaximumResponsesRequestBytes = 32 * 1024;
 constexpr std::size_t MaximumResponsesResponseBytes = 256 * 1024;
+constexpr std::size_t MaximumZoomSignatureInputBytes = 20 * 1024;
 constexpr std::wstring_view CredentialTarget = L"TechMapLive/OpenAIApiKey";
+constexpr std::wstring_view ZoomClientIdTarget = L"TechMapLive/ZoomClientId";
+constexpr std::wstring_view ZoomClientSecretTarget = L"TechMapLive/ZoomClientSecret";
+constexpr std::wstring_view ZoomWebhookSecretTarget = L"TechMapLive/ZoomWebhookSecret";
 constexpr std::array<std::uint8_t, 24> Entropy{
     0x54, 0x65, 0x63, 0x68, 0x4d, 0x61, 0x70, 0x4c, 0x69, 0x76, 0x65, 0x2d,
     0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x2d, 0x76, 0x31, 0x21, 0x00,
@@ -72,7 +77,7 @@ bool ReadAll(std::vector<std::uint8_t>& result, std::size_t maximumBytes) {
     }
 }
 
-bool ReadCredentialInput(std::vector<std::uint8_t>& result) {
+bool ReadCredentialInput(std::vector<std::uint8_t>& result, const char* prompt) {
     if (_isatty(_fileno(stdin)) == 0) return ReadAll(result, MaximumCredentialBytes);
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     DWORD originalMode = 0;
@@ -80,7 +85,7 @@ bool ReadCredentialInput(std::vector<std::uint8_t>& result) {
     if (!SetConsoleMode(input, originalMode & ~ENABLE_ECHO_INPUT)) return false;
     std::array<wchar_t, MaximumCredentialBytes + 3> characters{};
     DWORD count = 0;
-    std::fputs("OpenAI API key (input hidden): ", stderr);
+    std::fputs(prompt, stderr);
     const bool read = ReadConsoleW(input, characters.data(), static_cast<DWORD>(characters.size() - 1), &count, nullptr) != FALSE;
     SetConsoleMode(input, originalMode);
     std::fputs("\n", stderr);
@@ -198,14 +203,30 @@ bool Unprotect(const std::vector<std::uint8_t>& input, std::vector<std::uint8_t>
     return true;
 }
 
-bool ValidCredential(const std::vector<std::uint8_t>& value) {
+bool PrintableCredential(const std::vector<std::uint8_t>& value, std::size_t minimum, std::size_t maximum) {
+    return value.size() >= minimum && value.size() <= maximum &&
+        std::all_of(value.begin(), value.end(), [](std::uint8_t character) { return character >= 0x21 && character <= 0x7e; });
+}
+
+bool ValidOpenAiCredential(const std::vector<std::uint8_t>& value) {
     if (value.size() < 20 || value.size() > MaximumCredentialBytes) return false;
     return std::all_of(value.begin(), value.end(), [](std::uint8_t character) { return character >= 0x21 && character <= 0x7e; }) &&
         value[0] == 's' && value[1] == 'k' && value[2] == '-';
 }
 
-bool StoreCredential(std::wstring_view target, std::vector<std::uint8_t>& value) {
-    if (!ValidCredential(value)) {
+bool ValidZoomClientId(const std::vector<std::uint8_t>& value) {
+    return PrintableCredential(value, 8, 128) && std::all_of(value.begin(), value.end(), [](std::uint8_t character) {
+        return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+            (character >= '0' && character <= '9') || character == '_' || character == '-';
+    });
+}
+
+bool ValidZoomSecret(const std::vector<std::uint8_t>& value) { return PrintableCredential(value, 16, MaximumCredentialBytes); }
+
+using CredentialValidator = bool (*)(const std::vector<std::uint8_t>&);
+
+bool StoreCredential(std::wstring_view target, std::vector<std::uint8_t>& value, CredentialValidator validator, const wchar_t* username) {
+    if (!validator(value)) {
         if (!value.empty()) SecureZeroMemory(value.data(), value.size());
         return false;
     }
@@ -215,10 +236,161 @@ bool StoreCredential(std::wstring_view target, std::vector<std::uint8_t>& value)
     credential.CredentialBlobSize = static_cast<DWORD>(value.size());
     credential.CredentialBlob = value.data();
     credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
-    credential.UserName = const_cast<LPWSTR>(L"OpenAI API");
+    credential.UserName = const_cast<LPWSTR>(username);
     const bool stored = CredWriteW(&credential, 0) != FALSE;
     SecureZeroMemory(value.data(), value.size());
     return stored;
+}
+
+bool ReadStoredCredential(std::wstring_view target, std::vector<std::uint8_t>& value, CredentialValidator validator) {
+    PCREDENTIALW rawCredential = nullptr;
+    if (!CredReadW(target.data(), CRED_TYPE_GENERIC, 0, &rawCredential) || rawCredential == nullptr) return false;
+    std::unique_ptr<CREDENTIALW, decltype(&CredFree)> credential(rawCredential, CredFree);
+    if (rawCredential->CredentialBlob == nullptr || rawCredential->CredentialBlobSize > MaximumCredentialBytes) return false;
+    value.assign(rawCredential->CredentialBlob, rawCredential->CredentialBlob + rawCredential->CredentialBlobSize);
+    SecureZeroMemory(rawCredential->CredentialBlob, rawCredential->CredentialBlobSize);
+    if (validator(value)) return true;
+    if (!value.empty()) SecureZeroMemory(value.data(), value.size());
+    value.clear();
+    return false;
+}
+
+bool HmacSha256(const std::vector<std::uint8_t>& key, const std::vector<std::uint8_t>& input, std::array<std::uint8_t, 32>& digest) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD objectSize = 0;
+    DWORD copied = 0;
+    bool succeeded = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG) >= 0 &&
+        BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectSize), sizeof(objectSize), &copied, 0) >= 0 && objectSize > 0;
+    std::vector<std::uint8_t> object(succeeded ? objectSize : 0);
+    if (succeeded) succeeded = BCryptCreateHash(algorithm, &hash, object.data(), objectSize,
+        const_cast<PUCHAR>(key.data()), static_cast<ULONG>(key.size()), 0) >= 0;
+    if (succeeded) succeeded = BCryptHashData(hash, const_cast<PUCHAR>(input.data()), static_cast<ULONG>(input.size()), 0) >= 0 &&
+        BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
+    if (hash != nullptr) BCryptDestroyHash(hash);
+    if (algorithm != nullptr) BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (!object.empty()) SecureZeroMemory(object.data(), object.size());
+    if (!succeeded) SecureZeroMemory(digest.data(), digest.size());
+    return succeeded;
+}
+
+bool WriteHexDigest(const std::array<std::uint8_t, 32>& digest) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::array<char, 65> encoded{};
+    for (std::size_t index = 0; index < digest.size(); ++index) {
+        encoded[index * 2] = digits[digest[index] >> 4];
+        encoded[index * 2 + 1] = digits[digest[index] & 0x0f];
+    }
+    encoded[64] = '\n';
+    return WriteAll(encoded.data(), encoded.size());
+}
+
+bool DecodeHexDigest(std::string_view encoded, std::array<std::uint8_t, 32>& digest) {
+    if (encoded.size() != 64) return false;
+    const auto nibble = [](char value) -> int {
+        if (value >= '0' && value <= '9') return value - '0';
+        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+        return -1;
+    };
+    for (std::size_t index = 0; index < digest.size(); ++index) {
+        const int high = nibble(encoded[index * 2]);
+        const int low = nibble(encoded[index * 2 + 1]);
+        if (high < 0 || low < 0) { SecureZeroMemory(digest.data(), digest.size()); return false; }
+        digest[index] = static_cast<std::uint8_t>((high << 4) | low);
+    }
+    return true;
+}
+
+bool ConstantTimeEqual(const std::array<std::uint8_t, 32>& left, const std::array<std::uint8_t, 32>& right) {
+    std::uint8_t difference = 0;
+    for (std::size_t index = 0; index < left.size(); ++index) difference |= left[index] ^ right[index];
+    return difference == 0;
+}
+
+bool ValidZoomOpaque(const std::uint8_t* begin, std::size_t size) {
+    if (size == 0 || size > 256) return false;
+    return std::all_of(begin, begin + size, [](std::uint8_t character) {
+        return character >= 0x21 && character <= 0x7e && character != ',';
+    });
+}
+
+bool SignZoomClient(std::vector<std::uint8_t>& framed) {
+    if (framed.size() < 6) { if (!framed.empty()) SecureZeroMemory(framed.data(), framed.size()); return false; }
+    const std::size_t meetingSize = static_cast<std::size_t>(framed[0]) | (static_cast<std::size_t>(framed[1]) << 8);
+    const std::size_t streamOffset = 2 + meetingSize;
+    if (streamOffset + 2 > framed.size()) { SecureZeroMemory(framed.data(), framed.size()); return false; }
+    const std::size_t streamSize = static_cast<std::size_t>(framed[streamOffset]) | (static_cast<std::size_t>(framed[streamOffset + 1]) << 8);
+    const std::size_t streamDataOffset = streamOffset + 2;
+    if (streamDataOffset + streamSize != framed.size() || !ValidZoomOpaque(framed.data() + 2, meetingSize) ||
+        !ValidZoomOpaque(framed.data() + streamDataOffset, streamSize)) {
+        SecureZeroMemory(framed.data(), framed.size());
+        return false;
+    }
+    std::vector<std::uint8_t> clientId;
+    std::vector<std::uint8_t> secret;
+    std::array<std::uint8_t, 32> digest{};
+    bool succeeded = ReadStoredCredential(ZoomClientIdTarget, clientId, ValidZoomClientId) &&
+        ReadStoredCredential(ZoomClientSecretTarget, secret, ValidZoomSecret);
+    if (succeeded) {
+        std::vector<std::uint8_t> message;
+        message.reserve(clientId.size() + meetingSize + streamSize + 2);
+        message.insert(message.end(), clientId.begin(), clientId.end());
+        message.push_back(',');
+        message.insert(message.end(), framed.begin() + 2, framed.begin() + static_cast<std::ptrdiff_t>(streamOffset));
+        message.push_back(',');
+        message.insert(message.end(), framed.begin() + static_cast<std::ptrdiff_t>(streamDataOffset), framed.end());
+        succeeded = HmacSha256(secret, message, digest);
+        if (!message.empty()) SecureZeroMemory(message.data(), message.size());
+    }
+    if (!clientId.empty()) SecureZeroMemory(clientId.data(), clientId.size());
+    if (!secret.empty()) SecureZeroMemory(secret.data(), secret.size());
+    SecureZeroMemory(framed.data(), framed.size());
+    const bool written = succeeded && WriteHexDigest(digest);
+    SecureZeroMemory(digest.data(), digest.size());
+    return written;
+}
+
+bool VerifyZoomWebhook(std::vector<std::uint8_t>& framed) {
+    constexpr std::size_t prefixSize = 10 + 67;
+    if (framed.size() <= prefixSize || framed.size() > MaximumZoomSignatureInputBytes ||
+        !std::all_of(framed.begin(), framed.begin() + 10, [](std::uint8_t value) { return value >= '0' && value <= '9'; }) ||
+        framed[10] != 'v' || framed[11] != '0' || framed[12] != '=') {
+        if (!framed.empty()) SecureZeroMemory(framed.data(), framed.size());
+        return false;
+    }
+    std::array<std::uint8_t, 32> supplied{};
+    if (!DecodeHexDigest(std::string_view(reinterpret_cast<const char*>(framed.data() + 13), 64), supplied)) {
+        SecureZeroMemory(framed.data(), framed.size());
+        return false;
+    }
+    std::vector<std::uint8_t> key;
+    std::vector<std::uint8_t> message;
+    std::array<std::uint8_t, 32> expected{};
+    message.reserve(framed.size() - prefixSize + 14);
+    message.insert(message.end(), {'v', '0', ':'});
+    message.insert(message.end(), framed.begin(), framed.begin() + 10);
+    message.push_back(':');
+    message.insert(message.end(), framed.begin() + static_cast<std::ptrdiff_t>(prefixSize), framed.end());
+    const bool verified = ReadStoredCredential(ZoomWebhookSecretTarget, key, ValidZoomSecret) &&
+        HmacSha256(key, message, expected) && ConstantTimeEqual(expected, supplied);
+    if (!key.empty()) SecureZeroMemory(key.data(), key.size());
+    if (!message.empty()) SecureZeroMemory(message.data(), message.size());
+    SecureZeroMemory(expected.data(), expected.size());
+    SecureZeroMemory(supplied.data(), supplied.size());
+    SecureZeroMemory(framed.data(), framed.size());
+    return WriteText(verified ? "{\"valid\":true}\n" : "{\"valid\":false}\n");
+}
+
+bool SignZoomUrlValidation(std::vector<std::uint8_t>& token) {
+    if (!PrintableCredential(token, 1, 256)) { if (!token.empty()) SecureZeroMemory(token.data(), token.size()); return false; }
+    std::vector<std::uint8_t> key;
+    std::array<std::uint8_t, 32> digest{};
+    const bool signedValue = ReadStoredCredential(ZoomWebhookSecretTarget, key, ValidZoomSecret) && HmacSha256(key, token, digest);
+    if (!key.empty()) SecureZeroMemory(key.data(), key.size());
+    SecureZeroMemory(token.data(), token.size());
+    const bool written = signedValue && WriteHexDigest(digest);
+    SecureZeroMemory(digest.data(), digest.size());
+    return written;
 }
 
 bool CredentialExists(std::wstring_view target) {
@@ -252,7 +424,7 @@ bool SendResponsesRequest(const std::vector<std::uint8_t>& input, std::vector<st
     }
     std::vector<std::uint8_t> key(rawCredential->CredentialBlob, rawCredential->CredentialBlob + rawCredential->CredentialBlobSize);
     SecureZeroMemory(rawCredential->CredentialBlob, rawCredential->CredentialBlobSize);
-    if (!ValidCredential(key)) { if (!key.empty()) SecureZeroMemory(key.data(), key.size()); return false; }
+    if (!ValidOpenAiCredential(key)) { if (!key.empty()) SecureZeroMemory(key.data(), key.size()); return false; }
 
     constexpr std::wstring_view authorizationPrefix = L"Authorization: Bearer ";
     constexpr std::wstring_view authorizationSuffix = L"\r\nContent-Type: application/json";
@@ -310,7 +482,17 @@ bool SelfTest() {
 
     std::wstring target = L"TechMapLive/Test/" + std::to_wstring(GetCurrentProcessId());
     std::vector<std::uint8_t> key{'s','k','-','s','y','n','t','h','e','t','i','c','-','t','e','s','t','-','o','n','l','y','-','0','0','0','1'};
-    if (!StoreCredential(target, key) || !CredentialExists(target) || !DeleteCredential(target)) return false;
+    if (!StoreCredential(target, key, ValidOpenAiCredential, L"Synthetic test") || !CredentialExists(target) || !DeleteCredential(target)) return false;
+
+    std::vector<std::uint8_t> hmacKey{'s','y','n','t','h','e','t','i','c','-','z','o','o','m','-','s','e','c','r','e','t'};
+    std::vector<std::uint8_t> hmacInput{'s','y','n','t','h','e','t','i','c','-','m','e','s','s','a','g','e'};
+    std::array<std::uint8_t, 32> hmacDigest{};
+    const bool hmacSucceeded = HmacSha256(hmacKey, hmacInput, hmacDigest) &&
+        std::any_of(hmacDigest.begin(), hmacDigest.end(), [](std::uint8_t value) { return value != 0; });
+    SecureZeroMemory(hmacKey.data(), hmacKey.size());
+    SecureZeroMemory(hmacInput.data(), hmacInput.size());
+    SecureZeroMemory(hmacDigest.data(), hmacDigest.size());
+    if (!hmacSucceeded) return false;
 
     wchar_t temporary[MAX_PATH]{};
     if (GetTempPathW(MAX_PATH, temporary) == 0) return false;
@@ -346,8 +528,25 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (command == L"store-key") {
         std::vector<std::uint8_t> value;
-        if (!ReadCredentialInput(value)) return 4;
-        return StoreCredential(CredentialTarget, value) ? 0 : 5;
+        if (!ReadCredentialInput(value, "OpenAI API key (input hidden): ")) return 4;
+        return StoreCredential(CredentialTarget, value, ValidOpenAiCredential, L"OpenAI API") ? 0 : 5;
+    }
+    if (command == L"store-zoom-client-id" || command == L"store-zoom-client-secret" || command == L"store-zoom-webhook-secret") {
+        std::vector<std::uint8_t> value;
+        const bool isClientId = command == L"store-zoom-client-id";
+        const bool isClientSecret = command == L"store-zoom-client-secret";
+        const char* prompt = isClientId ? "Zoom RTMS Client ID (input hidden): " :
+            isClientSecret ? "Zoom RTMS Client Secret (input hidden): " : "Zoom Webhook Secret Token (input hidden): ";
+        if (!ReadCredentialInput(value, prompt)) return 4;
+        const auto target = isClientId ? ZoomClientIdTarget : isClientSecret ? ZoomClientSecretTarget : ZoomWebhookSecretTarget;
+        const auto validator = isClientId ? ValidZoomClientId : ValidZoomSecret;
+        return StoreCredential(target, value, validator, L"Zoom RTMS") ? 0 : 5;
+    }
+    if (command == L"zoom-client-signature" || command == L"zoom-webhook-verify" || command == L"zoom-url-validation") {
+        std::vector<std::uint8_t> input;
+        if (!ReadAll(input, MaximumZoomSignatureInputBytes) || input.empty()) return 4;
+        return (command == L"zoom-client-signature" ? SignZoomClient(input) :
+            command == L"zoom-webhook-verify" ? VerifyZoomWebhook(input) : SignZoomUrlValidation(input)) ? 0 : 5;
     }
     if (command == L"responses") {
         std::vector<std::uint8_t> input;
@@ -361,6 +560,13 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (command == L"key-status") return WriteText(CredentialExists(CredentialTarget) ? "{\"configured\":true}\n" : "{\"configured\":false}\n") ? 0 : 5;
     if (command == L"delete-key") return DeleteCredential(CredentialTarget) ? 0 : 5;
+    if (command == L"zoom-credentials-status") {
+        const bool configured = CredentialExists(ZoomClientIdTarget) && CredentialExists(ZoomClientSecretTarget) && CredentialExists(ZoomWebhookSecretTarget);
+        return WriteText(configured ? "{\"configured\":true}\n" : "{\"configured\":false}\n") ? 0 : 5;
+    }
+    if (command == L"delete-zoom-credentials") {
+        return DeleteCredential(ZoomClientIdTarget) && DeleteCredential(ZoomClientSecretTarget) && DeleteCredential(ZoomWebhookSecretTarget) ? 0 : 5;
+    }
     if (command == L"self-test") return SelfTest() && WriteText("{\"selfTest\":true}\n") ? 0 : 6;
     return 2;
 }

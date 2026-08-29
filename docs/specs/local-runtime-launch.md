@@ -2,7 +2,7 @@
 
 ## Outcome
 
-利用者はWindows terminalの一つのcommandでTechMap Liveを起動し、OCR-firstの会議ワークスペースを試せる。UIとcompanionは`127.0.0.1`だけへbindし、launcherが所有する子processだけを終了時にcleanupする。
+利用者はWindows terminalの一つのcommandでTechMap Liveを起動し、Zoom RTMS-first／Teams OCR fallbackの会議ワークスペースを試せる。UIとcompanionは`127.0.0.1`だけへbindし、launcherが所有する子processだけを終了時にcleanupする。
 
 ## Preflight
 
@@ -10,7 +10,7 @@
 
 - Node.js 22.18以降、web dependencies、caption helper、privacy helper。
 - `%LOCALAPPDATA%\TechMapLive\ocr\current`にあるTesseract 5.5.3 manifestと実fileのSHA-256一致。
-- loopback port 3000と43117が利用可能であること。
+- loopback port 3000、browser companionの43117、Zoom専用Webhook listenerの43118が利用可能であること。43118使用中はZoom以外の入力も含め起動前に明示失敗する。
 - Teams音声helper、transcriber、Whisper modelは明示fallbackのoptional readinessとして別表示する。
 
 preflightはTeams、microphone、screen、OpenAIへアクセスしない。`-ContractOnly`はPowerShell syntaxとlauncher fileだけを検証し、CIでnative runtimeや実dataを要求しない。
@@ -24,8 +24,9 @@ launcherはforegroundに残り、Ctrl+Cまたはいずれかの子process終了�
 ## Input order
 
 1. 合成デモは同意やcaptureなしで利用できる。
-2. 実会議は全参加者同意を確認し、Teams字幕OCRを明示開始して矩形を選択する。
-3. OCRを利用できない場合だけTeams音声を明示診断し、成功後に別buttonでfallbackを開始する。
-4. OCR失敗、caption missing、低confidenceを理由に音声fallbackを自動開始しない。
+2. Zoomでは全参加者同意後にRTMSを明示armし、署名済みstarted eventを検出してから60秒以内に別buttonで接続を確認する。同時に複数started eventを検出した場合は接続しない。
+3. Zoom RTMSを利用できない会議ではTeams字幕OCRを明示開始して矩形を選択する。
+4. OCRを利用できない場合だけTeams音声を明示診断し、成功後に別buttonでfallbackを開始する。
+5. RTMS／OCR失敗、caption missing、低confidenceを理由に別sourceを自動開始しない。
 
-実Teams、microphone、OpenAIのtrialは自動testに含めず、利用者が同意境界と送信previewを確認して手動実行する。
+実Zoom、Teams、microphone、OpenAIのtrialは自動testに含めず、利用者が同意境界と送信previewを確認して手動実行する。

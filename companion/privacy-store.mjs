@@ -4,6 +4,7 @@ import { open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emptyAnalysisState, validateAnalysisState } from '../app/domain/analysis/contract.ts';
+import { utteranceSources } from '../app/domain/transcription/utterance.ts';
 
 const maximumSessionPlaintextBytes = 1024 * 1024;
 const maximumSessionCiphertextBytes = 8 * 1024 * 1024;
@@ -38,7 +39,7 @@ function isValidStoredUtterance(item) {
     /^[a-zA-Z0-9_-]{1,80}$/.test(item.id) &&
     Number.isSafeInteger(item.revision) && item.revision >= 0 &&
     item.phase === 'final' &&
-    ['local', 'remote', 'teams-caption', 'synthetic'].includes(item.source) &&
+    utteranceSources.includes(item.source) &&
     ['self', 'remote-group', 'displayed-alias', 'anonymous', 'unknown'].includes(item.speaker) &&
     aliasIsValid &&
     Number.isSafeInteger(item.startMs) && item.startMs >= 0 &&

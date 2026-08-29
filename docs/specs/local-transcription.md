@@ -12,7 +12,7 @@ The UI states are `idle`, `requesting-permission`, `starting-local-engine`, `lis
 
 ## Utterance contract
 
-Each utterance contains a bounded ID, monotonic revision, `partial` or `final` phase, `local`／`remote`／`teams-caption`／`synthetic` source, `self`／`remote-group`／`displayed-alias`／`anonymous`／`unknown` speaker label, integer start/end milliseconds, and at most 8,000 characters of text. `displayed-alias` requires a session-only `speaker-1` through `speaker-999` alias; every other speaker label forbids `speakerAlias`. Raw Teams display names never cross the caption adapter boundary.
+Each utterance contains a bounded ID, monotonic revision, `partial` or `final` phase, `local`／`remote`／`teams-caption`／`zoom-rtms`／`synthetic` source, `self`／`remote-group`／`displayed-alias`／`anonymous`／`unknown` speaker label, integer start/end milliseconds, and at most 8,000 characters of text. `displayed-alias` requires a session-only `speaker-1` through `speaker-999` alias; every other speaker label forbids `speakerAlias`. Raw Teams display names and Zoom identities never cross the browser adapter boundary.
 
 - Lower or duplicate revisions are ignored.
 - A final utterance cannot regress to partial.
@@ -27,14 +27,14 @@ MVP must not infer an individual identity from the remote mixed stream.
 - Browser microphone PCM: 16 kHz, mono, signed 16-bit little endian, maximum 128 KiB per request.
 - Browser送信queue: maximum 512 KiB. local hostが追いつかない場合は古い音声を蓄積せず、sessionを`engine-unavailable`へfail closedする。
 - Teams PCM: 48 kHz stereo signed 16-bit little endian, three-frame boxcar low-passでdownmixしてから3:1 decimationし、shared input formatへ変換する。
-- Companion listener: exactly `127.0.0.1:43117`.
+- Browser companion listener: exactly `127.0.0.1:43117`. Zoom signed webhook uses the isolated `127.0.0.1:43118/zoom/webhook` listener defined in `zoom-rtms-source.md`.
 - Allowed UI origins: `http://127.0.0.1:3000` and `http://localhost:3000`.
 - Browser authorization: launcherがcompanionへenvironment経由、UI serverへ起動後のloopback HTTP bodyで一度だけ渡す256-bit launch secretを使う。companionは直ちにenvironment entryを削除し、UI serverはmemoryだけに保持する。browserはsecretをURL、history、command lineへ載せず、same-origin POSTでUI serverから取得してcompanion bootstrapにだけ使う。その後の256-bit random bearerはmemory-onlyかつOrigin-boundで、未使用なら10分で失効し、使用中は各認証requestで10分延長する。401時はlaunch secretから一度だけ再bootstrapして同じlocal sessionを継続する。
 - Worker IPC: versioned `TMI1` input and `TMO1` output frames with reserved-byte and size validation.
 - Raw audio has no file, IndexedDB, localStorage, log, telemetry, crash attachment, or external network sink.
 - Meeting runtime has no model download path.
 
-Final transcripts, including anonymized `teams-caption` utterances, are persisted only after explicit checkbox opt-in, through the DPAPI session boundary defined in `privacy-boundary.md`. Browser IndexedDB is not an active persistence target; obsolete plaintext data from earlier builds is purged on startup.
+Final transcripts, including anonymized `teams-caption` and `zoom-rtms` utterances, are persisted only after explicit checkbox opt-in, through the DPAPI session boundary defined in `privacy-boundary.md`. Browser IndexedDB is not an active persistence target; obsolete plaintext data from earlier builds is purged on startup.
 
 ## Manual verification boundary
 

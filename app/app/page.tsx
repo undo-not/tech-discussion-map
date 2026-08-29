@@ -98,7 +98,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#153f38] text-sm font-bold text-white">TM</div>
-            <div className="min-w-0"><p className="truncate text-sm font-semibold">Realtime Architecture Sync</p><p className="text-xs text-[#596763]">Microsoft Teams · 技術ディスカッション</p></div>
+            <div className="min-w-0"><p className="truncate text-sm font-semibold">Realtime Architecture Sync</p><p className="text-xs text-[#596763]">Zoom / Microsoft Teams · 技術ディスカッション</p></div>
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden rounded-full border border-[#cdd6d1] bg-white px-3 py-1.5 text-xs text-[#53635f] sm:inline-flex">ローカル処理</span>
