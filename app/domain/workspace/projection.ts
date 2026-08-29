@@ -103,6 +103,6 @@ export function diffWorkspace(previous: AnalysisState, next: AnalysisState): Wor
 
 export function viewContainsItem(view: WorkspaceView, item: AnalysisItem): boolean {
   if (view === 'focus') return true;
-  if (view === 'decisions') return item.kind === 'decision' || item.kind === 'question' || item.kind === 'topic';
+  if (view === 'decisions') return item.kind === 'decision';
   return item.kind === 'action' || item.kind === 'risk';
 }

@@ -76,6 +76,7 @@ export function DiscussionWorkspace({ analysisState, transcript, selectedItemId,
   const [mapLayout, setMapLayout] = useState<MapLayout>({ positions: {} });
   const [recentChanges, setRecentChanges] = useState<WorkspaceChange[]>([]);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
+  const [highlightedView, setHighlightedView] = useState<WorkspaceView>('focus');
   const previousStateRef = useRef(analysisState);
   const lastHandledFocusSequenceRef = useRef(0);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -88,9 +89,10 @@ export function DiscussionWorkspace({ analysisState, transcript, selectedItemId,
     previousStateRef.current = analysisState;
     setRecentChanges(changes.slice(-6).reverse());
     setHighlightedIds(changes.map((change) => change.itemId));
+    setHighlightedView(view);
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = setTimeout(() => setHighlightedIds([]), 1_100);
-  }, [analysisState]);
+  }, [analysisState, view]);
   useEffect(() => () => { if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current); }, []);
 
   useEffect(() => {
@@ -127,6 +129,7 @@ export function DiscussionWorkspace({ analysisState, transcript, selectedItemId,
       </div>
 
       {projection.currentIssue && <div className="rounded-xl border border-[#d9b66e] bg-[#fff8e8] px-4 py-2 text-sm" aria-label="現在の論点"><span className="mr-2 text-xs font-bold text-[#7a5a28]">CURRENT ISSUE</span><b>{projection.currentIssue.title}</b><span className="ml-2 text-xs text-[#6a6252]">{projection.currentIssue.status}</span></div>}
+      {operationStatus && <p role="status" aria-live="polite" className="rounded-lg border border-[#d2dad4] bg-white px-3 py-1.5 text-xs text-[#52615c]">{operationStatus}</p>}
 
       <div className={`grid min-h-0 flex-1 gap-2 ${presentationMode ? 'xl:grid-cols-[minmax(210px,.58fr)_minmax(600px,2fr)_minmax(230px,.68fr)]' : 'xl:grid-cols-[minmax(250px,.72fr)_minmax(520px,1.65fr)_minmax(270px,.78fr)]'}`}>
         <aside className="flex min-h-[300px] flex-col overflow-hidden rounded-2xl border border-[#d9ded8] bg-[#fbfaf7] shadow-[0_8px_30px_rgba(35,54,49,0.05)] xl:min-h-0">
@@ -136,9 +139,9 @@ export function DiscussionWorkspace({ analysisState, transcript, selectedItemId,
         </aside>
 
         <div className="min-h-0">
-          <div hidden={view !== 'focus'} className="h-full"><LiveMindMap analysisState={analysisState} focusRequest={focusRequest} canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} onPatchItem={onPatchItem} onSelectionChange={onSelectionChange} operationStatus={operationStatus} layout={mapLayout} onLayoutChange={setMapLayout} active={view === 'focus'} highlightedItemIds={highlightedIds} presentationMode={presentationMode} /></div>
-          {view === 'decisions' && <Board label="決定ボード" columns={projection.decisions} selectedItemId={selectedItemId} highlightedIds={highlightedIds} onSelectItem={(item) => onFocusItem(item.id, item.evidenceUtteranceIds)} />}
-          {view === 'actions-risks' && <Board label="Action・Riskボード" columns={projection.actionsAndRisks} selectedItemId={selectedItemId} highlightedIds={highlightedIds} onSelectItem={(item) => onFocusItem(item.id, item.evidenceUtteranceIds)} />}
+          <div hidden={view !== 'focus'} className="h-full"><LiveMindMap analysisState={analysisState} focusRequest={focusRequest} canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} onPatchItem={onPatchItem} onSelectionChange={onSelectionChange} layout={mapLayout} onLayoutChange={setMapLayout} active={view === 'focus'} highlightedItemIds={view === highlightedView ? highlightedIds : []} presentationMode={presentationMode} /></div>
+          {view === 'decisions' && <Board label="決定ボード" columns={projection.decisions} selectedItemId={selectedItemId} highlightedIds={view === highlightedView ? highlightedIds : []} onSelectItem={(item) => onFocusItem(item.id, item.evidenceUtteranceIds)} />}
+          {view === 'actions-risks' && <Board label="Action・Riskボード" columns={projection.actionsAndRisks} selectedItemId={selectedItemId} highlightedIds={view === highlightedView ? highlightedIds : []} onSelectItem={(item) => onFocusItem(item.id, item.evidenceUtteranceIds)} />}
         </div>
 
         <aside className="flex min-h-[320px] flex-col overflow-hidden rounded-2xl border border-[#d9ded8] bg-[#fbfaf7] shadow-[0_8px_30px_rgba(35,54,49,0.05)] xl:min-h-0"><div className="border-b px-3 py-2"><h2 className="text-sm font-semibold">会議インサイト</h2><p className="text-[10px] text-[#5c6a66]">論点・決定・未解決・Action</p></div><div className="flex-1 space-y-2 overflow-y-auto p-2">{activeInsights.map((item) => <article key={item.id} className={`insight insight-${item.kind} ${highlightedIds.includes(item.id) ? 'workspace-change-once' : ''}`}><div className="mb-1 flex justify-between"><span>{kindLabels[item.kind]} · {item.status}</span><span className="insight-meta">{Math.round(item.confidence * 100)}%</span></div><p>{item.title}</p><button onClick={() => onFocusItem(item.id, item.evidenceUtteranceIds)}>根拠 {item.evidenceUtteranceIds.join(' · ')}</button></article>)}{activeInsights.length === 0 && <p className="p-4 text-center text-xs text-[#5c6a66]">分析項目はまだありません</p>}</div></aside>

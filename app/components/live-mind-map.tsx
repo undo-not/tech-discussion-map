@@ -46,6 +46,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const lastFocusedNodeRef = useRef('');
+  const lastHandledFocusSequenceRef = useRef(0);
   const degradedViewportTrackingRef = useRef<DegradedViewportTracking>({ processedKey: '', trackedScroll: null });
   const explicitReframeRef = useRef(false);
   const focusFrameRef = useRef(0);
@@ -109,6 +110,8 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
 
   useEffect(() => {
     if (!focusRequest) return;
+    if (lastHandledFocusSequenceRef.current === focusRequest.sequence) return;
+    lastHandledFocusSequenceRef.current = focusRequest.sequence;
     const requested = focusRequest.itemId ? analysisState.items.find((item) => item.id === focusRequest.itemId) : undefined;
     const target = requested ?? [...analysisState.items].reverse().find((item) => focusRequest.evidenceUtteranceIds.some((id) => item.evidenceUtteranceIds.includes(id)));
     if (!target) return;

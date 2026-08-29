@@ -47,6 +47,15 @@ describe('DiscussionWorkspace', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: '議論フォーカス' }).getAttribute('aria-selected')).toBe('true'));
   });
 
+  test('a topic request from the decision board falls back to focus and status remains visible', async () => {
+    const callbacks = { ...props(), operationStatus: '明示された状態通知' };
+    const view = render(<DiscussionWorkspace {...callbacks} />);
+    fireEvent.click(screen.getByRole('tab', { name: '決定ボード' }));
+    expect(screen.getByText('明示された状態通知')).toBeTruthy();
+    view.rerender(<DiscussionWorkspace {...callbacks} focusRequest={{ sequence: 2, itemId: 'topic', evidenceUtteranceIds: ['u-topic'] }} />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: '議論フォーカス' }).getAttribute('aria-selected')).toBe('true'));
+  });
+
   test('shows one semantic change entry and does not replay it for the same revision', async () => {
     const callbacks = props();
     const view = render(<DiscussionWorkspace {...callbacks} />);

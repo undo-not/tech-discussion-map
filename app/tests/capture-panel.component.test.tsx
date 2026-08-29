@@ -139,6 +139,7 @@ describe('CapturePanel input ownership', () => {
     expect(screen.getByText('CAPTURE OFF')).toBeTruthy();
     expect(screen.getByText('OPENAI送信 OFF')).toBeTruthy();
     expect(screen.getByText('LOCAL保存 OFF')).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: '全参加者同意 未確認' })).toBeTruthy();
     expect(screen.queryByText('同意・保存・外部送信の安全境界')).toBeNull();
     expect(screen.getByRole('button', { name: '合成デモ' })).toBeTruthy();
   });
