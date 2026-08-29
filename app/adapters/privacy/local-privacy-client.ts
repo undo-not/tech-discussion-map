@@ -2,6 +2,7 @@ import type { ConsentRecord } from '../../domain/privacy/consent.ts';
 import type { TranscriptUtterance } from '../../domain/transcription/utterance.ts';
 import type { AnalysisState } from '../../domain/analysis/contract.ts';
 import { getLocalLaunchSecret } from '../companion/launch-secret.ts';
+import { saveTextToUserSelectedPath } from '../export/local-file-picker.ts';
 
 const privacyCompanionOrigin = 'http://127.0.0.1:43117';
 const sessionIdPattern = /^[a-f0-9-]{36}$/;
@@ -93,17 +94,13 @@ export class LocalPrivacyClient {
   }
 }
 
-type SaveFilePickerWindow = Window & {
-  showSaveFilePicker?: (options: { suggestedName: string; types: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<{ createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void>; abort(): Promise<void> }> }>;
-};
-
 export async function exportSessionToUserSelectedPath(session: StoredSession): Promise<void> {
-  const picker = (window as SaveFilePickerWindow).showSaveFilePicker;
-  if (!picker) throw new Error('local-export-unsupported');
-  const handle = await picker({ suggestedName: `techmap-session-${session.id}.json`, types: [{ description: 'TechMap session JSON', accept: { 'application/json': ['.json'] } }] });
-  const writable = await handle.createWritable();
-  try { await writable.write(JSON.stringify(session, null, 2)); await writable.close(); }
-  catch (error) { await writable.abort().catch(() => undefined); throw error; }
+  await saveTextToUserSelectedPath({
+    suggestedName: `techmap-session-${session.id}.json`,
+    description: 'TechMap session JSON',
+    accept: { 'application/json': ['.json'] },
+    data: JSON.stringify(session, null, 2),
+  });
 }
 
 export { privacyCompanionOrigin, privacyUrl };

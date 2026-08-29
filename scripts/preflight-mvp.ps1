@@ -44,6 +44,7 @@ if ($ContractOnly) {
   }
   Assert-Leaf (Join-Path $PSScriptRoot 'complete-vinext-standalone.mjs') 'MVP build script'
   $startSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'start-mvp.ps1') -Raw
+  $preflightSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'preflight-mvp.ps1') -Raw
   if ($startSource -match 'techmap-launch|launchUrl|Start-Process\s+[^\r\n]*Secret') { throw 'Launch secret must not appear in a URL or browser process argument.' }
   foreach ($requiredPattern in @('Set-WebLaunchSecret \$launchSecret', "Start-Process 'http://127\.0\.0\.1:3000/'", "@\(\`$webCli, 'start', '--hostname', '127\.0\.0\.1', '--port', '3000'\)", "HOST = '127\.0\.0\.1'", "PORT = '3000'", 'taskkill\.exe /PID \$Process\.Id /T /F')) {
     if ($startSource -notmatch $requiredPattern) { throw "MVP launcher behavior is missing: $requiredPattern" }
@@ -54,11 +55,18 @@ if ($ContractOnly) {
       if ($message -notmatch [regex]::Escape($requiredText)) { throw "Node.js recovery guidance is missing: $requiredText" }
     }
   }
+  foreach ($requiredPattern in @('techmap-captions\.exe', '& \$captionHelperPath probe', 'contentInspected', 'contentEmitted', 'contentPersisted', 'OCR capture not proven')) {
+    if ($preflightSource -notmatch $requiredPattern) { throw "Content-free Teams preflight behavior is missing: $requiredPattern" }
+  }
   Write-Output 'MVP launcher contract: PASS'
   exit 0
 }
 
 if ($env:OS -ne 'Windows_NT') { throw 'TechMap Live MVP runtime supports Windows only.' }
+$windowsVersion = [Environment]::OSVersion.Version
+if ($windowsVersion.Major -ne 10 -or $windowsVersion.Build -lt 19045) {
+  throw "Unsupported Windows build: $($windowsVersion.Build). TechMap Live MVP requires Windows 10 22H2 (build 19045) or a current Windows 11 build."
+}
 $node = Get-Command node -ErrorAction SilentlyContinue
 if ($null -eq $node) {
   throw (New-NodeSetupMessage 'Node.js was not found on PATH.')
@@ -84,9 +92,10 @@ $webRuntimePath = if ($env:TECHMAP_PORTABLE_ROOT) {
 } else {
   Join-Path $repositoryRoot 'app\node_modules\vinext\dist\cli.js'
 }
+$captionHelperPath = Join-Path $repositoryRoot 'native\teams-captions\build\Release\techmap-captions.exe'
 $required = @(
   @{ Path = $webRuntimePath; Description = 'Web runtime' },
-  @{ Path = Join-Path $repositoryRoot 'native\teams-captions\build\Release\techmap-captions.exe'; Description = 'Teams caption helper' },
+  @{ Path = $captionHelperPath; Description = 'Teams caption helper' },
   @{ Path = Join-Path $repositoryRoot 'native\privacy\build\Release\techmap-privacy.exe'; Description = 'Privacy helper' }
 )
 foreach ($item in $required) { Assert-Leaf $item.Path $item.Description }
@@ -126,6 +135,26 @@ foreach ($entry in @(
   if ($actual -ne $manifest[$entry.Key]) { throw "Pinned OCR hash verification failed: $($entry.Key)" }
 }
 
+$probeOutput = @(& $captionHelperPath probe 2>$null)
+$probeExitCode = $LASTEXITCODE
+$probeText = ($probeOutput | Out-String).Trim()
+try {
+  $probe = $probeText | ConvertFrom-Json
+} catch {
+  throw 'Teams caption helper returned an invalid content-free probe response.'
+}
+$probeKeys = @($probe.PSObject.Properties.Name)
+$requiredProbeKeys = @('contractVersion', 'state', 'contentInspected', 'contentEmitted', 'contentPersisted')
+if ($probeKeys.Count -ne $requiredProbeKeys.Count -or @($requiredProbeKeys | Where-Object { $_ -notin $probeKeys }).Count -ne 0) {
+  throw 'Teams caption helper content-free probe schema is unsupported.'
+}
+$allowedProbeStates = @('candidate-found', 'teams-not-found', 'teams-window-not-found', 'uia-unavailable', 'probe-timeout', 'probe-failed', 'helper-launch-failed')
+if ($probe.contractVersion -ne 1 -or $probe.state -notin $allowedProbeStates -or
+    $probe.contentInspected -ne $false -or $probe.contentEmitted -ne $false -or $probe.contentPersisted -ne $false -or
+    $probeExitCode -notin @(0, 2)) {
+  throw 'Teams caption helper content-free probe violated its privacy contract.'
+}
+
 foreach ($port in @(3000, 43117, 43118)) { if (-not (Test-PortAvailable $port)) { throw "Loopback port $port is already in use." } }
 
 $fallback = @(
@@ -134,5 +163,7 @@ $fallback = @(
   Join-Path $localAppData 'TechMapLive\models\ggml-tiny.bin'
 )
 $fallbackReady = ($fallback | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }).Count -eq 0
+Write-Output "Windows runtime: PASS (build $($windowsVersion.Build))"
+Write-Output "Teams caption content-free probe: $($probe.state) (OCR capture not proven)"
 Write-Output 'Required OCR-first runtime: PASS'
 Write-Output "Explicit audio fallback: $(if ($fallbackReady) { 'AVAILABLE' } else { 'UNAVAILABLE (optional)' })"

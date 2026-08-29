@@ -30,6 +30,7 @@ import {
   releaseInputAttempt,
 } from '@/domain/transcription/input-start-gate.ts';
 import { applyCaptionSourceEvent, emptyCaptionAssemblerState, transitionCaptionSource, type CaptionAssemblerState, type CaptionSourceSessionEvent, type CaptionSourceState } from '@/domain/transcription/caption-source.ts';
+import { emptyTeamsMvpReadiness, isTeamsMvpReady, setTeamsMvpReadiness, type TeamsMvpReadinessKey } from '@/domain/transcription/teams-mvp-readiness.ts';
 import { applyTranscriptEvent, emptyTranscriptState, type TranscriptState, type TranscriptUtterance } from '@/domain/transcription/utterance.ts';
 
 const stateLabels: Record<TranscriptionSessionState, string> = {
@@ -68,6 +69,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const [openAiInFlight, setOpenAiInFlight] = useState(0);
   const [inputMode, setInputMode] = useState<'none' | 'microphone' | 'teams-caption' | 'zoom-rtms' | 'audio-fallback' | 'synthetic'>('none');
   const [captionSourceState, setCaptionSourceState] = useState<CaptionSourceState>('idle');
+  const [teamsReadiness, setTeamsReadinessState] = useState(emptyTeamsMvpReadiness);
   const [zoomRtmsState, setZoomRtmsState] = useState<ZoomRtmsState>('stopped');
   const [teamsAudioProbe, setTeamsAudioProbe] = useState<TeamsAudioProbeReport | null>(null);
   const [teamsAudioProbeBusy, setTeamsAudioProbeBusy] = useState(false);
@@ -305,8 +307,12 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   };
 
   const startCaptionOcr = async () => runInputStart('Teams字幕OCR', async (attempt) => {
-    if (!localRuntime || !consentConfirmed) {
-      setMessage(!localRuntime ? '公開UIではTeams画面を取得できません。Windowsローカルruntimeを使用してください。' : '全参加者の同意を確認するまで実入力は開始できません。');
+    if (!localRuntime || !consentConfirmed || !isTeamsMvpReady(teamsReadiness)) {
+      setMessage(!localRuntime
+        ? '公開UIではTeams画面を取得できません。Windowsローカルruntimeを使用してください。'
+        : !consentConfirmed
+          ? '全参加者の同意を確認するまで実入力は開始できません。'
+          : 'Teams字幕OCRの開始条件をすべて確認してください。未確認の会議ではcaptureを開始しません。');
       return;
     }
     consentAllowedRef.current = true;
@@ -336,7 +342,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setCaptionSourceState(sourceState);
     dispatch({ type: 'start-requested' });
     dispatch({ type: 'permission-granted' });
-    setMessage('同意確認済み。Teamsを前面表示すると字幕領域の選択overlayを開きます。');
+    setMessage('同意・Teams条件確認済み。Teamsを前面表示し、現在話している1人分の表示名と字幕本文だけを含むカードを選択してください。');
     let client: LocalCaptionClient | null = null;
     try {
       let callbackClient: LocalCaptionClient | null = null;
@@ -770,6 +776,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   };
   const stop = async () => {
     cancelInputStart(inputStartGateRef.current);
+    setTeamsReadinessState(emptyTeamsMvpReadiness);
     const stoppedMode = inputMode;
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     synthetic.current?.stop(); synthetic.current = null;
@@ -789,6 +796,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setMessage(saveLocallyRef.current ? `入力を終了し、${discarded}を破棄しました。暗号化sessionは保持期限まで残ります。` : `入力を終了し、${discarded}を破棄しました。未保存sessionはmemoryだけに残っています。`);
   };
   const deleteCurrent = async (): Promise<boolean> => {
+    setTeamsReadinessState(emptyTeamsMvpReadiness);
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     sessionWriteBlockedRef.current = true;
@@ -825,6 +833,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setConsentConfirmed(confirmed);
     consentAllowedRef.current = confirmed;
     if (!confirmed) {
+      setTeamsReadinessState(emptyTeamsMvpReadiness);
       teamsAudioProbeGenerationRef.current += 1;
       setTeamsAudioProbe(null);
       setTeamsAudioProbeBusy(false);
@@ -879,6 +888,10 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const startPending = sessionState === 'requesting-permission' || sessionState === 'starting-local-engine';
   const inputBusy = active || startPending;
   const realCapture = inputMode === 'microphone' || inputMode === 'teams-caption' || inputMode === 'zoom-rtms' || inputMode === 'audio-fallback';
+  const teamsReady = isTeamsMvpReady(teamsReadiness);
+  const updateTeamsReadiness = (key: TeamsMvpReadinessKey, checked: boolean) => {
+    setTeamsReadinessState((current) => setTeamsMvpReadiness(current, key, checked));
+  };
   const latest = transcript.utterances.slice(-2);
   const preview = createMinimalUtteranceWindow(transcript.utterances);
   let outboundPreview = '確定発話がないか、検証に失敗したため送信不能';
@@ -906,7 +919,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           <label className="sr-only" htmlFor="microphone-device">入力マイク</label>
           <select id="microphone-device" value={deviceId} disabled={inputBusy} onChange={(event) => setDeviceId(event.target.value)} className="max-w-48 rounded-lg border border-[#cbd3ce] bg-white px-2 py-2 text-xs"><option value="">既定のマイク</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select>
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startZoomRtms()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Zoom RTMSを待機' : 'Zoom RTMSはローカル実行のみ'}</button>}
-          {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
+          {!inputBusy && <button disabled={!localRuntime || !consentConfirmed || !teamsReady} onClick={() => void startCaptionOcr()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'Teams字幕OCRを開始' : '字幕OCRはローカル実行のみ'}</button>}
           {!inputBusy && <button disabled={!localRuntime || !consentConfirmed} onClick={() => void startLocal()} className="rounded-lg bg-[#153f38] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#8a9893]">{localRuntime ? 'マイクを開始' : 'マイクはローカル実行のみ'}</button>}
           {inputMode === 'zoom-rtms' && zoomRtmsState === 'awaiting-confirmation' && <button onClick={() => void confirmZoomStream()} className="rounded-lg bg-[#8b3f34] px-3 py-2 text-xs font-semibold text-white">検出したZoom streamを接続</button>}
           {sessionState === 'listening' && inputMode !== 'audio-fallback' && (inputMode !== 'zoom-rtms' || zoomRtmsState === 'active') && <button onClick={() => void pause()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">一時停止</button>}
@@ -916,8 +929,8 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         </div>
       </div>
       {!presentationMode && <><div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs">
-        <b>推奨: Zoom RTMS</b>
-        <span>Zoomでは公式の発話者付きtranscriptを直接利用します。Zoom RTMSを設定できない会議ではTeams字幕OCR、音声フォールバックの順で明示選択してください。</span>
+        <b>無料MVP本線: Teams字幕OCR</b>
+        <span>サインイン済みTeamsデスクトップの通常会議で、日本語ライブキャプションを表示して使用します。匿名・browser・電話参加、E2EE、screen capture preventionは正式サポート外です。</span>
         {!inputBusy && <button disabled={!localRuntime || !consentConfirmed || teamsAudioProbeBusy} onClick={() => void probeTeamsAudioFallback()} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">{teamsAudioProbeBusy ? 'Teams音声を診断中' : 'Teams音声を診断'}</button>}
         {!inputBusy && teamsAudioProbe?.supportedBuild && teamsAudioProbe.targetFound && teamsAudioProbe.activationSucceeded && <button onClick={() => void startTeamsAudioFallback()} className="rounded border border-[#c8a7a0] px-2 py-1 font-semibold text-[#8b3f34]">診断済み音声フォールバックを開始</button>}
         {teamsAudioProbe && <span>Windows build {teamsAudioProbe.windowsBuild} · Teams {teamsAudioProbe.targetFound ? '検出' : '未検出'} · 音声activation {teamsAudioProbe.activationSucceeded ? '成功' : '失敗'}</span>}
@@ -938,6 +951,13 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
           <div className="space-y-2">
             <label className="flex items-start gap-2 font-semibold text-[#8b3f34]"><input type="checkbox" checked={consentConfirmed} onChange={(event) => revokeConsent(event.target.checked)} />会議サービス側の表示だけに依存せず、全参加者がこのアプリの文字起こし・分析に同意したことを確認しました</label>
+            <fieldset className="space-y-1 rounded border border-[#d6ded8] p-2">
+              <legend className="px-1 font-semibold">Teams字幕OCRの開始条件（会議ごとに確認）</legend>
+              <label className="flex items-start gap-2"><input type="checkbox" checked={teamsReadiness.signedInDesktop} disabled={inputBusy} onChange={(event) => updateTeamsReadiness('signedInDesktop', event.target.checked)} />Teamsデスクトップ版にサインインし、通常の会議へ参加しています（匿名・browser・電話参加ではありません）</label>
+              <label className="flex items-start gap-2"><input type="checkbox" checked={teamsReadiness.captionsVisible} disabled={inputBusy} onChange={(event) => updateTeamsReadiness('captionsVisible', event.target.checked)} />日本語のライブキャプションが表示され、現在の発話者名と本文を画面で確認できます</label>
+              <label className="flex items-start gap-2"><input type="checkbox" checked={teamsReadiness.captureAllowed} disabled={inputBusy} onChange={(event) => updateTeamsReadiness('captureAllowed', event.target.checked)} />E2EE・画面キャプチャ防止・組織の取得禁止が適用されていないことを確認しました</label>
+              <p className={teamsReady ? 'font-semibold text-[#176044]' : 'font-semibold text-[#8b3f34]'}>Teams開始条件: {teamsReady ? '確認済み' : '未確認 — 字幕OCRは開始しません'}</p>
+            </fieldset>
             <label className="flex items-center gap-2"><input type="checkbox" checked={saveLocally} disabled={!consentConfirmed || active} onChange={(event) => setSaveLocally(event.target.checked)} />確定文字起こし・分析・session状態を暗号化してローカル保存</label>
             <label>保持期間 <select value={retentionDays} disabled={!saveLocally || active} onChange={(event) => setRetentionDays(Number(event.target.value) as RetentionDays)} className="ml-2 rounded border px-2 py-1">{retentionOptions.map((days) => <option value={days} key={days}>{days}日</option>)}</select></label>
             <p>保存先: %LOCALAPPDATA%\TechMapLive\sessions（current-user-only ACL + DPAPI）。生音声、OCR画像、TSV、raw表示名は保存対象外です。</p>

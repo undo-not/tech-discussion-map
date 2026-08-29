@@ -1,6 +1,6 @@
 # ADR-0007: Teamsライブキャプションを第一候補の文字入力とする
 
-- Status: Superseded by ADR-0010（Teams OCRはZoom RTMSを利用できない会議のfallbackとして継続）
+- Status: Amended by ADR-0011（無料MVPの成立判定ではTeams OCRを第一入力へ戻す）
 - Source: Issue #17
 - Reassesses: ADR-0002, ADR-0003
 
@@ -39,7 +39,7 @@ UI AutomationとOCRはいずれもTeamsの公開連携契約ではない。Teams
 - 取得した画面画像、raw display name、実字幕がdisk、log、Git、CI artifact、networkへ出ない。
 - OCRの対象矩形が利用者選択範囲を越えず、confidence不足または連続安定性不足を発話として確定しない。
 
-実Teams会議での文字精度、theme、表示倍率、改行、複数話者、黒frame耐性は、本人だけのテスト会議または全参加者同意済みの会議で手動確認する。品質gateを満たさないsessionでは自動で音声へ切り替えず、利用者が明示的にADR-0002/0003のfallbackを診断・開始する。
+実Teams会議での文字精度、theme、表示倍率、改行、複数話者、黒frame耐性は、本人だけのテスト会議または全参加者同意済みの会議で手動確認する。Issue #40と[Teams字幕OCR MVP support specification](../specs/teams-mvp-support.md)がこのacceptanceを管理し、完了まではMVP成立未確定とする。品質gateを満たさないsessionでは自動で音声へ切り替えず、利用者が明示的にADR-0002/0003のfallbackを診断・開始する。
 
 ## Data flow
 

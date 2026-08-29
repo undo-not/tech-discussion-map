@@ -132,7 +132,28 @@ afterEach(() => {
   teamsAudioHarness.instances.length = 0;
 });
 
+function confirmTeamsMvpReadiness() {
+  for (const name of [
+    /Teamsデスクトップ版にサインイン/,
+    /日本語のライブキャプションが表示/,
+    /E2EE・画面キャプチャ防止/,
+  ]) {
+    fireEvent.click(screen.getByRole('checkbox', { name }));
+  }
+}
+
 describe('CapturePanel input ownership', () => {
+  test('Teams caption OCR stays fail-closed until every meeting-specific condition is confirmed', () => {
+    let analysisState: AnalysisState = emptyAnalysisState;
+    render(<CapturePanel analysisState={analysisState} getAnalysisState={() => analysisState} onAnalysisStateChange={(next) => { analysisState = next; }} />);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    const start = screen.getByRole('button', { name: 'Teams字幕OCRを開始' }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    confirmTeamsMvpReadiness();
+    expect(start.disabled).toBe(false);
+  });
+
   test('presentation mode keeps safety indicators visible and hides setup density', () => {
     let analysisState: AnalysisState = emptyAnalysisState;
     const openSafety = vi.fn();
@@ -159,6 +180,7 @@ describe('CapturePanel input ownership', () => {
     />);
 
     fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    confirmTeamsMvpReadiness();
     const firstStartButton = screen.getByRole('button', { name: 'Teams字幕OCRを開始' });
     fireEvent.click(firstStartButton);
     fireEvent.click(firstStartButton);
@@ -166,6 +188,8 @@ describe('CapturePanel input ownership', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '終了' }));
     await screen.findByRole('button', { name: 'Teams字幕OCRを開始' });
+    expect((screen.getByRole('checkbox', { name: /Teamsデスクトップ版にサインイン/ }) as HTMLInputElement).checked).toBe(false);
+    confirmTeamsMvpReadiness();
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     expect(captionHarness.instances).toHaveLength(2);
 
@@ -192,6 +216,7 @@ describe('CapturePanel input ownership', () => {
 
     const consent = screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ });
     fireEvent.click(consent);
+    confirmTeamsMvpReadiness();
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     expect(captionHarness.instances).toHaveLength(1);
     fireEvent.click(consent);
@@ -201,6 +226,7 @@ describe('CapturePanel input ownership', () => {
     expect(screen.getByText('CAPTURE OFF')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '一時停止' })).toBeNull();
     expect((screen.getByRole('button', { name: 'Teams字幕OCRを開始' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('checkbox', { name: /日本語のライブキャプションが表示/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   test('failure from the owned caption client releases the input slot for retry', async () => {
@@ -212,6 +238,7 @@ describe('CapturePanel input ownership', () => {
     />);
 
     fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    confirmTeamsMvpReadiness();
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     captionHarness.instances[0].resolveStart();
     await screen.findByRole('button', { name: '一時停止' });
@@ -233,6 +260,7 @@ describe('CapturePanel input ownership', () => {
     />);
 
     fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    confirmTeamsMvpReadiness();
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     captionHarness.instances[0].resolveStart();
     fireEvent.click(await screen.findByRole('button', { name: '一時停止' }));
@@ -281,6 +309,7 @@ describe('CapturePanel input ownership', () => {
     />);
 
     fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    confirmTeamsMvpReadiness();
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     expect(captionHarness.instances).toHaveLength(1);
     view.unmount();
@@ -293,6 +322,7 @@ describe('CapturePanel input ownership', () => {
     let analysisState: AnalysisState = emptyAnalysisState;
     render(<CapturePanel analysisState={analysisState} getAnalysisState={() => analysisState} onAnalysisStateChange={(next) => { analysisState = next; }} />);
     fireEvent.click(screen.getByRole('checkbox', { name: /全参加者がこのアプリの文字起こし・分析に同意/ }));
+    confirmTeamsMvpReadiness();
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     captionHarness.instances[0].resolveStart();
     await screen.findByRole('button', { name: '一時停止' });

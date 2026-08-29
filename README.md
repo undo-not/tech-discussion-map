@@ -1,10 +1,10 @@
 # TechMap Live
 
-TechMap Liveは、技術ディスカッションをリアルタイムに文字起こし・分析し、論点、決定、未解決質問、リスク、アクションを根拠発話付きのマインドマップへ整理する会議ワークスペースです。Zoom RTMSまたはMicrosoft Teams会議での利用を想定しています。
+TechMap Liveは、技術ディスカッションをリアルタイムに文字起こし・分析し、論点、決定、未解決質問、リスク、アクションを根拠発話付きのマインドマップへ整理する会議ワークスペースです。Microsoft Teams会議を無料MVPの本線とし、Zoom RTMSもoptional inputとして利用できます。
 
 ## Product boundary
 
-本番runtimeはWindowsローカルcompanionとして動作します。Zoomでは利用者が明示armしたRTMS transcript-only streamを第一入力候補とし、発話者IDは受信直後にsession-only aliasへ変換します。Zoomのsigned webhookだけは専用loopback portへ利用者の一時HTTPS tunnelを必要とします。Teamsでは利用者が明示選択したライブキャプション矩形のmemory-only local OCRを使い、字幕を利用できない場合に限って明示操作でlocal audio fallbackへ切り替えます。生音声、OCR画像、Zoom raw identityは保存せず、匿名化済み文字起こしと分析結果はGit working tree外へローカル保存できます。OpenAI API送信はIssue #3と#6のredaction、保持、`store: false`境界に従います。詳細は[ADR-0010](docs/adr/0010-zoom-rtms-transcript-source.md)、[Zoom RTMS source仕様](docs/specs/zoom-rtms-source.md)、[ADR-0007](docs/adr/0007-teams-live-captions-first.md)を参照してください。
+本番runtimeはWindowsローカルcompanionとして動作します。無料MVPでは、利用者が明示選択したTeamsライブキャプションの現在一cardだけをmemory-only local OCRします。Zoomでは利用者が明示armしたRTMS transcript-only streamをoptional inputとして利用でき、signed webhookだけは専用loopback portへ利用者の一時HTTPS tunnelを必要とします。字幕を利用できない場合のlocal audio fallbackは明示操作だけで開始します。生音声、OCR画像、Zoom raw identityは保存せず、匿名化済み文字起こしと分析結果はGit working tree外へローカル保存できます。OpenAI API送信はIssue #3と#6のredaction、保持、`store: false`境界に従います。無料MVPの成立状況と未確認条件は[Teams字幕OCR MVP support specification](docs/specs/teams-mvp-support.md)を参照してください。
 
 ## Repository layout
 
@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-tesseract.ps1 `
 powershell -ExecutionPolicy Bypass -File scripts/start-mvp.ps1
 ```
 
-まず「合成デモ」でtimeline→分析→mind mapを確認できます。Zoom RTMSを使うPCでは`powershell -ExecutionPolicy Bypass -File scripts/setup-zoom-rtms.ps1`でGeneral App credentialをWindows Credential Managerへ登録し、利用者の一時HTTPS tunnelを`127.0.0.1:43118/zoom/webhook`だけへ向けます。全参加者同意後、UIの「Zoom RTMSを待機」を押してRTMSを開始し、signed stream検出後60秒以内に「検出したZoom streamを接続」を押してください。複数stream検出時は接続しません。armは15分・one-shotで、3000または43117を公開してはいけません。実Teamsでは全参加者の同意を確認し、「Teams字幕OCRを開始」から字幕本文と発話者を含む範囲だけをdragします。OCRが利用できない場合に限り、明示操作で音声fallbackへ切り替えます。
+まず「合成デモ」でtimeline→分析→mind mapを確認し、必要なら「Mermaidを保存」から利用者が選択したlocal pathへ`.mmd`を保存できます。実Teamsでは全参加者の同意と画面上の開始条件を確認し、「Teams字幕OCRを開始」から現在発話者のcaption cardだけをdragします。OCRが利用できない場合に限り、明示操作で音声fallbackへ切り替えます。Zoom RTMSを使う環境では`powershell -ExecutionPolicy Bypass -File scripts/setup-zoom-rtms.ps1`でGeneral App credentialをWindows Credential Managerへ登録し、利用者の一時HTTPS tunnelを`127.0.0.1:43118/zoom/webhook`だけへ向けます。armは15分・one-shotで、3000または43117を公開してはいけません。
 
 詳しい起動境界は[Windows local MVP launch specification](docs/specs/local-runtime-launch.md)、OCRは[Teams caption source capability specification](docs/specs/teams-caption-source.md)、音声fallbackは[Windows Teams audio adapter](docs/specs/windows-audio-adapter.md)を参照してください。
 

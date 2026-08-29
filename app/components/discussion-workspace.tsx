@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { exportMermaidToUserSelectedPath } from '@/adapters/export/local-text-export.ts';
 import { LiveMindMap } from '@/components/live-mind-map';
 import type { AnalysisItem, AnalysisKind, AnalysisState } from '@/domain/analysis/contract.ts';
+import { analysisStateToMermaid } from '@/domain/export/mermaid.ts';
 import type { HumanItemPatch, MapLayout } from '@/domain/mind-map/workspace.ts';
 import type { TranscriptState } from '@/domain/transcription/utterance.ts';
 import { diffWorkspace, projectWorkspace, viewContainsItem, type WorkspaceChange, type WorkspaceColumn, type WorkspaceView } from '@/domain/workspace/projection.ts';
@@ -77,6 +79,7 @@ export function DiscussionWorkspace({ analysisState, transcript, selectedItemId,
   const [recentChanges, setRecentChanges] = useState<WorkspaceChange[]>([]);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
   const [highlightedView, setHighlightedView] = useState<WorkspaceView>('focus');
+  const [exportStatus, setExportStatus] = useState('');
   const previousStateRef = useRef(analysisState);
   const lastHandledFocusSequenceRef = useRef(0);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -116,6 +119,15 @@ export function DiscussionWorkspace({ analysisState, transcript, selectedItemId,
   const nodeByEvidence = new Map<string, AnalysisItem>();
   for (const item of analysisState.items) for (const utteranceId of item.evidenceUtteranceIds) nodeByEvidence.set(utteranceId, item);
 
+  const exportMermaid = async () => {
+    try {
+      await exportMermaidToUserSelectedPath(analysisStateToMermaid(analysisState));
+      setExportStatus('Mermaidを利用者が選択したlocal pathへ保存しました。');
+    } catch (error) {
+      if ((error as DOMException)?.name !== 'AbortError') setExportStatus('Mermaidを保存できませんでした。');
+    }
+  };
+
   return (
     <section aria-label="共有ディスカッションworkspace" className="mx-auto flex w-full max-w-[1800px] min-h-0 flex-col gap-2 p-2 md:p-3">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#d5dcd7] bg-[#fbfaf7] p-2 shadow-sm">
@@ -124,11 +136,13 @@ export function DiscussionWorkspace({ analysisState, transcript, selectedItemId,
         </div>
         <div className="flex items-center gap-2">
           {projection.currentIssue && <p className="hidden max-w-xl truncate text-xs lg:block"><b>現在の論点:</b> {projection.currentIssue.title}</p>}
+          <button disabled={analysisState.items.length === 0} onClick={() => void exportMermaid()} className="rounded-lg border border-[#d5dcd7] bg-white px-3 py-2 text-xs font-bold disabled:opacity-50">Mermaidを保存</button>
           <button aria-pressed={presentationMode} onClick={() => onPresentationModeChange(!presentationMode)} className={`rounded-lg border px-3 py-2 text-xs font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#153f38] ${presentationMode ? 'border-[#276758] bg-[#e2f0e8] text-[#176044]' : 'border-[#d5dcd7] bg-white'}`}>{presentationMode ? '発表モード ON' : '発表モード'}</button>
         </div>
       </div>
 
       {projection.currentIssue && <div className="rounded-xl border border-[#d9b66e] bg-[#fff8e8] px-4 py-2 text-sm" aria-label="現在の論点"><span className="mr-2 text-xs font-bold text-[#7a5a28]">CURRENT ISSUE</span><b>{projection.currentIssue.title}</b><span className="ml-2 text-xs text-[#6a6252]">{projection.currentIssue.status}</span></div>}
+      {exportStatus && <p role="status" aria-live="polite" className="rounded-lg border border-[#d2dad4] bg-white px-3 py-1.5 text-xs text-[#52615c]">{exportStatus}</p>}
       {operationStatus && <p role="status" aria-live="polite" className="rounded-lg border border-[#d2dad4] bg-white px-3 py-1.5 text-xs text-[#52615c]">{operationStatus}</p>}
 
       <div className={`grid min-h-0 flex-1 gap-2 ${presentationMode ? 'xl:grid-cols-[minmax(210px,.58fr)_minmax(600px,2fr)_minmax(230px,.68fr)]' : 'xl:grid-cols-[minmax(250px,.72fr)_minmax(520px,1.65fr)_minmax(270px,.78fr)]'}`}>
