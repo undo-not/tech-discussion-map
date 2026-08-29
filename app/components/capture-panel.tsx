@@ -819,7 +819,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           {analysisState.items.length === 0 && <span className="text-[#65736e]">分析itemはまだありません。</span>}
         </div>
       </div>
-      <details open={forceSafetyOpen || (!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
+      <details open={forceSafetyOpen || (!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} onToggle={(event) => { if (!event.currentTarget.open && forceSafetyOpen) setForceSafetyOpen(false); }} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
         <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
           <div className="space-y-2">

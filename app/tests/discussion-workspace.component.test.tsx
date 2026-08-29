@@ -30,17 +30,20 @@ describe('DiscussionWorkspace', () => {
     const callbacks = props();
     const view = render(<DiscussionWorkspace {...callbacks} />);
     expect(document.getElementById('map-node-topic')).not.toBeNull();
-    fireEvent.change(screen.getByLabelText('マップを検索'), { target: { value: '候補' } });
+    fireEvent.change(screen.getByLabelText('マップを検索'), { target: { value: '中心' } });
     fireEvent.click(screen.getByRole('tab', { name: '決定ボード' }));
     expect(screen.getByRole('region', { name: '決定ボード' })).toBeTruthy();
     fireEvent.click(document.querySelector('[data-workspace-item="decision"]') as HTMLElement);
     expect(callbacks.onSelectionChange).toHaveBeenCalledWith('decision');
     view.rerender(<DiscussionWorkspace {...callbacks} selectedItemId="decision" />);
+    await waitFor(() => expect(screen.getByLabelText('選択nodeの詳細').textContent).toContain('採用候補'));
     fireEvent.click(screen.getByRole('tab', { name: 'Action・Risk' }));
     expect(document.querySelector('[data-workspace-item="action"]')).not.toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: '議論フォーカス' }));
-    await waitFor(() => expect(document.getElementById('map-node-decision')?.getAttribute('aria-current')).toBe('true'));
-    expect((screen.getByLabelText('マップを検索') as HTMLInputElement).value).toBe('候補');
+    await waitFor(() => expect(screen.getByLabelText('選択nodeの詳細').textContent).toContain('採用候補'));
+    expect(document.getElementById('map-node-decision')).toBeNull();
+    expect((screen.getByLabelText('マップを検索') as HTMLInputElement).value).toBe('中心');
+    expect(callbacks.onSelectionChange).toHaveBeenCalledTimes(1);
   });
 
   test('explicit evidence navigation switches to focus when active board cannot represent the target', async () => {

@@ -22,7 +22,7 @@ The UI does not continuously animate or automatically pan. `prefers-reduced-moti
 
 Presentation mode increases the central workspace share and reduces setup density. It does not unmount capture state. `CAPTURE`, `OPENAI送信`, `LOCAL保存`, input source, external-analysis permission, and participant-consent indicators remain visible, together with active pause/resume/stop controls. The compact consent state is read-only to avoid accidental session deletion; its safety-settings button explicitly exits presentation mode before consent can be changed. A meeting-ended retention reminder also remains visible. The full persistence, external-send, diagnostics, export/delete, and setup controls return when presentation mode is disabled.
 
-Transcript, insight, board, and update-rail controls use the existing one-shot evidence navigation contract. The destination is selected and, only after an explicit user command, keyboard focus may move to the active destination. Tabs, cards, map nodes, and presentation mode are keyboard-operable; state is expressed in text and accessible attributes; structural update text is announced through a polite live region.
+Transcript, insight, and update-rail controls use the existing one-shot evidence navigation contract. Board cards share selection without moving focus; an externally selected item that is outside the map's current filter remains selected in the detail panel without clearing that filter. After an explicit evidence-navigation command, keyboard focus may move to the active destination. Tabs, cards, map nodes, and presentation mode are keyboard-operable; state is expressed in text and accessible attributes; structural update text is announced through a polite live region.
 
 ## Responsive and security constraints
 
