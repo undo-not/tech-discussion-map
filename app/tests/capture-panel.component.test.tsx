@@ -188,6 +188,8 @@ describe('CapturePanel input ownership', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '終了' }));
     await screen.findByRole('button', { name: 'Teams字幕OCRを開始' });
+    expect((screen.getByRole('checkbox', { name: /Teamsデスクトップ版にサインイン/ }) as HTMLInputElement).checked).toBe(false);
+    confirmTeamsMvpReadiness();
     fireEvent.click(screen.getByRole('button', { name: 'Teams字幕OCRを開始' }));
     expect(captionHarness.instances).toHaveLength(2);
 
@@ -224,6 +226,7 @@ describe('CapturePanel input ownership', () => {
     expect(screen.getByText('CAPTURE OFF')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '一時停止' })).toBeNull();
     expect((screen.getByRole('button', { name: 'Teams字幕OCRを開始' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('checkbox', { name: /日本語のライブキャプションが表示/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   test('failure from the owned caption client releases the input slot for retry', async () => {

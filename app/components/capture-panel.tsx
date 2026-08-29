@@ -776,6 +776,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   };
   const stop = async () => {
     cancelInputStart(inputStartGateRef.current);
+    setTeamsReadinessState(emptyTeamsMvpReadiness);
     const stoppedMode = inputMode;
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     synthetic.current?.stop(); synthetic.current = null;
@@ -795,6 +796,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setMessage(saveLocallyRef.current ? `入力を終了し、${discarded}を破棄しました。暗号化sessionは保持期限まで残ります。` : `入力を終了し、${discarded}を破棄しました。未保存sessionはmemoryだけに残っています。`);
   };
   const deleteCurrent = async (): Promise<boolean> => {
+    setTeamsReadinessState(emptyTeamsMvpReadiness);
     if (analysisDebounceRef.current) { clearTimeout(analysisDebounceRef.current); analysisDebounceRef.current = null; }
     analysisGenerationRef.current += 1;
     sessionWriteBlockedRef.current = true;
@@ -831,6 +833,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
     setConsentConfirmed(confirmed);
     consentAllowedRef.current = confirmed;
     if (!confirmed) {
+      setTeamsReadinessState(emptyTeamsMvpReadiness);
       teamsAudioProbeGenerationRef.current += 1;
       setTeamsAudioProbe(null);
       setTeamsAudioProbeBusy(false);
