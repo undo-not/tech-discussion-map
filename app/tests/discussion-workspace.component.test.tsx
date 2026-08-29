@@ -14,6 +14,9 @@ const transcript = {
 };
 const items = [analysisItem('topic', 'topic', 'open', '中心論点'), analysisItem('decision', 'decision', 'proposed', '採用候補'), analysisItem('action', 'action', 'open', '次の作業')];
 
+const exportHarness = vi.hoisted(() => ({ exportMermaid: vi.fn<(source: string) => Promise<void>>(() => Promise.resolve()) }));
+vi.mock('@/adapters/export/local-text-export.ts', () => ({ exportMermaidToUserSelectedPath: exportHarness.exportMermaid }));
+
 function props(state = analysisState(1, items)) {
   return {
     analysisState: state, transcript, selectedItemId: '', canUndo: false, canRedo: false,
@@ -81,5 +84,15 @@ describe('DiscussionWorkspace', () => {
     render(<DiscussionWorkspace {...callbacks} />);
     fireEvent.click(screen.getByRole('button', { name: '発表モード' }));
     expect(callbacks.onPresentationModeChange).toHaveBeenCalledWith(true);
+  });
+
+  test('exports the current analysis as Mermaid only after an explicit click', async () => {
+    exportHarness.exportMermaid.mockClear();
+    render(<DiscussionWorkspace {...props()} />);
+    expect(exportHarness.exportMermaid).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Mermaidを保存' }));
+    await waitFor(() => expect(exportHarness.exportMermaid).toHaveBeenCalledTimes(1));
+    expect(exportHarness.exportMermaid.mock.calls[0][0]).toContain('flowchart LR');
+    expect(screen.getByText(/Mermaidを利用者が選択したlocal pathへ保存/)).toBeTruthy();
   });
 });

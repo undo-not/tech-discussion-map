@@ -56,6 +56,18 @@ test('Windows MVP preflight gives one actionable Node.js recovery path', async (
   assert.doesNotMatch(source, /Get-Command node -ErrorAction Stop/);
 });
 
+test('Windows MVP preflight probes Teams without emitting meeting-identifying data', async () => {
+  const source = await readFile(new URL('../../scripts/preflight-mvp.ps1', import.meta.url), 'utf8');
+  assert.match(source, /\[Environment\]::OSVersion\.Version/);
+  assert.match(source, /Build -lt 19045/);
+  assert.match(source, /@\(& \$captionHelperPath probe 2>\$null\)/);
+  assert.match(source, /contentInspected -ne \$false/);
+  assert.match(source, /contentEmitted -ne \$false/);
+  assert.match(source, /contentPersisted -ne \$false/);
+  assert.match(source, /OCR capture not proven/);
+  assert.doesNotMatch(source, /Write-Output[^\r\n]*(windowTitle|processId|selectedProcessId)/i);
+});
+
 test('every long-lived local client can renew an idle bearer without changing its session', async () => {
   for (const relativePath of [
     '../adapters/transcription/local-caption-client.ts',
