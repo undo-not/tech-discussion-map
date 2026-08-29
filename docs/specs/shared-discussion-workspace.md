@@ -4,7 +4,7 @@
 
 The shared discussion workspace is the screen-sharing surface for a live technical discussion. It helps participants see the current issue, evidence, decisions, unresolved work, actions, risks, and the latest structural change without introducing another persisted data model. The versioned `AnalysisState` remains the sole source of truth. The focus map, decision board, Action/Risk board, side insights, counts, and current-issue banner are deterministic UI projections and are never saved as meeting data or sent to an analyzer.
 
-Changing a view does not create or mutate an analysis item. Edits and confirmations continue through the existing validator-backed human mutation path. View selection, transcript search, presentation mode, one-shot highlight state, and map coordinates are local UI state. Starting, loading, or deleting a session resets that state through the existing workspace generation boundary.
+Changing a view does not create or mutate an analysis item. Edits and confirmations continue through the existing validator-backed human mutation path. View selection, transcript search, presentation mode, one-shot highlight state, and map coordinates are local UI state. Board-card clicks share selection without issuing a focus command; transcript, insight, and update-rail evidence links issue explicit focus commands. Starting, loading, or deleting a session resets that state through the existing workspace generation boundary.
 
 ## Views
 

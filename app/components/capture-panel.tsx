@@ -57,6 +57,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   const [deviceId, setDeviceId] = useState('');
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscriptState);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
+  const [forceSafetyOpen, setForceSafetyOpen] = useState(false);
   const [saveLocally, setSaveLocally] = useState(false);
   const [retentionDays, setRetentionDays] = useState<RetentionDays>(7);
   const [dataControlsAttested, setDataControlsAttested] = useState(false);
@@ -781,7 +782,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
         <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'audio-fallback' ? `audio fallback (${teamsAudioState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
-        {presentationMode && <><span className={`rounded-full px-3 py-1 font-bold ${consentConfirmed ? 'bg-[#e5efe9] text-[#176044]' : 'bg-[#fff0d8] text-[#7a541d]'}`}>全参加者同意 {consentConfirmed ? '確認済み' : '未確認'}</span><button onClick={onRequestSafetySettings} className="rounded-lg border border-[#cbd3ce] bg-white px-2 py-1 font-semibold">安全設定を開く</button></>}
+        {presentationMode && <><span className={`rounded-full px-3 py-1 font-bold ${consentConfirmed ? 'bg-[#e5efe9] text-[#176044]' : 'bg-[#fff0d8] text-[#7a541d]'}`}>全参加者同意 {consentConfirmed ? '確認済み' : '未確認'}</span><button onClick={() => { setForceSafetyOpen(true); onRequestSafetySettings?.(); }} className="rounded-lg border border-[#cbd3ce] bg-white px-2 py-1 font-semibold">安全設定を開く</button></>}
       </div>
       {presentationMode && meetingEnded && <p role="status" className="mx-auto mb-2 max-w-[1600px] rounded bg-[#fff4d9] p-2 text-xs font-semibold text-[#76551f]">会議入力を終了しました。暗号化保持、明示export、即時削除の判断は発表モードを終了して確認してください。</p>}
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
@@ -818,7 +819,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           {analysisState.items.length === 0 && <span className="text-[#65736e]">分析itemはまだありません。</span>}
         </div>
       </div>
-      <details open={(!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
+      <details open={forceSafetyOpen || (!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
         <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
           <div className="space-y-2">

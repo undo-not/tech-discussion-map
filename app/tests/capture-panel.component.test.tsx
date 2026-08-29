@@ -135,7 +135,8 @@ afterEach(() => {
 describe('CapturePanel input ownership', () => {
   test('presentation mode keeps safety indicators visible and hides setup density', () => {
     let analysisState: AnalysisState = emptyAnalysisState;
-    render(<CapturePanel analysisState={analysisState} getAnalysisState={() => analysisState} onAnalysisStateChange={(next) => { analysisState = next; }} presentationMode />);
+    const openSafety = vi.fn();
+    const view = render(<CapturePanel analysisState={analysisState} getAnalysisState={() => analysisState} onAnalysisStateChange={(next) => { analysisState = next; }} presentationMode onRequestSafetySettings={openSafety} />);
     expect(screen.getByText('CAPTURE OFF')).toBeTruthy();
     expect(screen.getByText('OPENAI送信 OFF')).toBeTruthy();
     expect(screen.getByText('LOCAL保存 OFF')).toBeTruthy();
@@ -143,6 +144,10 @@ describe('CapturePanel input ownership', () => {
     expect(screen.getByRole('button', { name: '安全設定を開く' })).toBeTruthy();
     expect(screen.queryByText('同意・保存・外部送信の安全境界')).toBeNull();
     expect(screen.getByRole('button', { name: '合成デモ' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '安全設定を開く' }));
+    expect(openSafety).toHaveBeenCalledTimes(1);
+    view.rerender(<CapturePanel analysisState={analysisState} getAnalysisState={() => analysisState} onAnalysisStateChange={(next) => { analysisState = next; }} presentationMode={false} onRequestSafetySettings={openSafety} />);
+    expect((screen.getByText('同意・保存・外部送信の安全境界').closest('details') as HTMLDetailsElement).open).toBe(true);
   });
 
   test('a delayed cancelled caption start cannot stop or hide its successful replacement', async () => {

@@ -20,6 +20,7 @@ type LiveMindMapProps = {
   onRedo: () => void;
   onPatchItem: (itemId: string, patch: HumanItemPatch) => boolean;
   onSelectionChange?: (itemId: string) => void;
+  selectedItemId?: string;
   layout?: MapLayout;
   onLayoutChange?: Dispatch<SetStateAction<MapLayout>>;
   active?: boolean;
@@ -27,7 +28,7 @@ type LiveMindMapProps = {
   presentationMode?: boolean;
 };
 
-export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRedo, onUndo, onRedo, onPatchItem, onSelectionChange, layout: controlledLayout, onLayoutChange, active = true, highlightedItemIds = [], presentationMode = false }: LiveMindMapProps) {
+export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRedo, onUndo, onRedo, onPatchItem, onSelectionChange, selectedItemId = '', layout: controlledLayout, onLayoutChange, active = true, highlightedItemIds = [], presentationMode = false }: LiveMindMapProps) {
   const [internalLayout, setInternalLayout] = useState<MapLayout>({ positions: {} });
   const layout = controlledLayout ?? internalLayout;
   const setLayout = onLayoutChange ?? setInternalLayout;
@@ -46,6 +47,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const lastFocusedNodeRef = useRef('');
   const lastHandledFocusSequenceRef = useRef(0);
+  const lastExternalSelectionRef = useRef('');
   const degradedViewportTrackingRef = useRef<DegradedViewportTracking>({ processedKey: '', trackedScroll: null });
   const explicitReframeRef = useRef(false);
   const focusFrameRef = useRef(0);
@@ -59,6 +61,12 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
     return () => cancelAnimationFrame(frame);
   }, [analysisState, setLayout]);
   useEffect(() => () => { if (focusFrameRef.current) cancelAnimationFrame(focusFrameRef.current); }, []);
+  useEffect(() => {
+    if (!selectedItemId || lastExternalSelectionRef.current === selectedItemId || !analysisState.items.some((item) => item.id === selectedItemId)) return;
+    lastExternalSelectionRef.current = selectedItemId;
+    const frame = requestAnimationFrame(() => setSelectedId(selectedItemId));
+    return () => cancelAnimationFrame(frame);
+  }, [analysisState, selectedItemId]);
   const renderedLayout = useMemo(() => analysisState.revision === 0 && analysisState.items.length === 0 ? resetMapLayout() : reconcileMapLayout(layout, analysisState), [analysisState, layout]);
 
   const filtered = useMemo(() => {
@@ -90,6 +98,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
     }
     setEditError('');
     setSelectedId(id);
+    lastExternalSelectionRef.current = id;
     onSelectionChange?.(id);
     if (focusFrameRef.current) cancelAnimationFrame(focusFrameRef.current);
     focusFrameRef.current = requestAnimationFrame(() => {
@@ -120,6 +129,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
       setKindFilter('all');
       if (['withdrawn', 'superseded'].includes(target.status)) setShowTombstones(true);
       setSelectedId(target.id);
+      lastExternalSelectionRef.current = target.id;
       onSelectionChange?.(target.id);
       secondFrame = requestAnimationFrame(() => focusNode(target.id, true));
     });
@@ -235,7 +245,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
           </svg>
           {visibleItems.map((item) => {
             const position = renderedLayout.positions[item.id] ?? { x: 0, y: 0 };
-            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、状態 ${item.status}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => { if (editingItemId && editingItemId !== item.id) { setEditing(false); setEditingItemId(''); } setEditError(''); setSelectedId(item.id); onSelectionChange?.(item.id); }} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${highlightedItemIds.includes(item.id) ? 'workspace-change-once' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
+            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、状態 ${item.status}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => { if (editingItemId && editingItemId !== item.id) { setEditing(false); setEditingItemId(''); } setEditError(''); lastExternalSelectionRef.current = item.id; setSelectedId(item.id); onSelectionChange?.(item.id); }} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${highlightedItemIds.includes(item.id) ? 'workspace-change-once' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
               <span className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase"><span>{kindLabels[item.kind]} · {item.status}</span><span className={item.provenance === 'ai-suggested' ? 'text-[#8a5a16]' : 'text-[#176044]'}>{provenanceLabel[item.provenance]}</span></span>
               <strong className="mt-1 block line-clamp-2 text-sm">{item.title}</strong>
               <span className="mt-1 block truncate text-[10px] text-[#52615c]">根拠 {item.evidenceUtteranceIds.join(' · ')}</span>
