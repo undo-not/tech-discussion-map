@@ -47,15 +47,18 @@ export type CapturePanelProps = {
   getAnalysisState: () => AnalysisState;
   onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean; resetLayout?: boolean }) => void;
   onTranscriptChange?: (state: TranscriptState) => void;
+  presentationMode?: boolean;
+  onRequestSafetySettings?: () => void;
 };
 
-export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange }: CapturePanelProps) {
+export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange, presentationMode = false, onRequestSafetySettings }: CapturePanelProps) {
   const localRuntime = useSyncExternalStore(subscribeRuntime, () => isLoopbackRuntime(window.location), () => false);
   const [sessionState, dispatch] = useReducer((state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event), 'idle');
   const [devices, setDevices] = useState<MicrophoneDevice[]>([]);
   const [deviceId, setDeviceId] = useState('');
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscriptState);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
+  const [forceSafetyOpen, setForceSafetyOpen] = useState(false);
   const [saveLocally, setSaveLocally] = useState(false);
   const [retentionDays, setRetentionDays] = useState<RetentionDays>(7);
   const [dataControlsAttested, setDataControlsAttested] = useState(false);
@@ -885,13 +888,15 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
   }
 
   return (
-    <section aria-label="会議入力" className="border-b border-[#d9ded8] bg-[#eef3ef] px-4 py-3 md:px-6">
+    <section aria-label="会議入力" className={`border-b border-[#d9ded8] bg-[#eef3ef] px-4 md:px-6 ${presentationMode ? 'py-2' : 'py-3'}`}>
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-2 pb-2 text-xs">
         <span className={`rounded-full px-3 py-1 font-bold ${realCapture ? 'bg-[#ffe2dd] text-[#8b2f22]' : 'bg-white text-[#52615c]'}`}>CAPTURE {realCapture ? sessionState === 'paused' ? 'PAUSED' : 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
         <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'zoom-rtms' ? `Zoom RTMS (${zoomRtmsState})` : inputMode === 'audio-fallback' ? `audio fallback (${teamsAudioState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
+        {presentationMode && <><span className={`rounded-full px-3 py-1 font-bold ${consentConfirmed ? 'bg-[#e5efe9] text-[#176044]' : 'bg-[#fff0d8] text-[#7a541d]'}`}>全参加者同意 {consentConfirmed ? '確認済み' : '未確認'}</span><button onClick={() => { setForceSafetyOpen(true); onRequestSafetySettings?.(); }} className="rounded-lg border border-[#cbd3ce] bg-white px-2 py-1 font-semibold">安全設定を開く</button></>}
       </div>
+      {presentationMode && meetingEnded && <p role="status" className="mx-auto mb-2 max-w-[1600px] rounded bg-[#fff4d9] p-2 text-xs font-semibold text-[#76551f]">会議入力を終了しました。暗号化保持、明示export、即時削除の判断は発表モードを終了して確認してください。</p>}
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${active ? 'animate-pulse bg-[#c55445]' : 'bg-[#8a9893]'}`} /><strong className="text-sm">{stateLabels[sessionState]}</strong><span className="text-xs text-[#52615c]">{message}</span></div>
@@ -910,7 +915,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           {!inputBusy && <button onClick={() => void startDemo()} className="rounded-lg border border-[#b8c8c1] bg-white px-3 py-2 text-xs font-semibold">合成デモ</button>}
         </div>
       </div>
-      <div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs">
+      {!presentationMode && <><div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center gap-2 rounded-lg border border-[#d6ded8] bg-white/70 p-2 text-xs">
         <b>推奨: Zoom RTMS</b>
         <span>Zoomでは公式の発話者付きtranscriptを直接利用します。Zoom RTMSを設定できない会議ではTeams字幕OCR、音声フォールバックの順で明示選択してください。</span>
         {!inputBusy && <button disabled={!localRuntime || !consentConfirmed || teamsAudioProbeBusy} onClick={() => void probeTeamsAudioFallback()} className="rounded border px-2 py-1 font-semibold disabled:opacity-50">{teamsAudioProbeBusy ? 'Teams音声を診断中' : 'Teams音声を診断'}</button>}
@@ -928,7 +933,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
           {analysisState.items.length === 0 && <span className="text-[#65736e]">分析itemはまだありません。</span>}
         </div>
       </div>
-      <details open={(!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
+      <details open={forceSafetyOpen || (!consentConfirmed && inputMode !== 'synthetic') || meetingEnded} onToggle={(event) => { if (!event.currentTarget.open && forceSafetyOpen) setForceSafetyOpen(false); }} className="mx-auto mt-2 max-w-[1600px] text-xs text-[#52615c]">
         <summary className="cursor-pointer font-semibold">同意・保存・外部送信の安全境界</summary>
         <div className="mt-2 grid gap-3 rounded-lg bg-white/80 p-3 lg:grid-cols-2">
           <div className="space-y-2">
@@ -955,7 +960,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
             <p>削除はlocal encrypted session全体が対象です。明示exportは別copyなので個別削除が必要です。OpenAI送信後の保持はlocal削除では取り消せません。外部model停止・refusal・不正schema時はdeltaを適用せずlocal workspaceを維持します。</p>
           </div>
         </div>
-      </details>
+      </details></>}
     </section>
   );
 }

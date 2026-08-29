@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type SetStateAction } from 'react';
 import type { AnalysisItem, AnalysisKind, AnalysisState } from '@/domain/analysis/contract.ts';
 import { advanceDegradedViewportTracking, canCommitMapEdit, degradedViewportFilterKey, latestRenderedMapItems, mapCanvasHeight, mapNodeHeight, mapNodeWidth, maximumRenderedNodes, nearestNodeId, reconcileMapLayout, resetMapLayout, scrollTargetForNode, scrollTargetForVisibleItems, topAlignedScrollTargetForItems, visibleSelectionId, type DegradedViewportTracking, type HumanItemPatch, type MapLayout } from '@/domain/mind-map/workspace.ts';
 
@@ -20,11 +20,18 @@ type LiveMindMapProps = {
   onRedo: () => void;
   onPatchItem: (itemId: string, patch: HumanItemPatch) => boolean;
   onSelectionChange?: (itemId: string) => void;
-  operationStatus?: string;
+  selectedItemId?: string;
+  layout?: MapLayout;
+  onLayoutChange?: Dispatch<SetStateAction<MapLayout>>;
+  active?: boolean;
+  highlightedItemIds?: string[];
+  presentationMode?: boolean;
 };
 
-export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRedo, onUndo, onRedo, onPatchItem, onSelectionChange, operationStatus = '' }: LiveMindMapProps) {
-  const [layout, setLayout] = useState<MapLayout>({ positions: {} });
+export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRedo, onUndo, onRedo, onPatchItem, onSelectionChange, selectedItemId = '', layout: controlledLayout, onLayoutChange, active = true, highlightedItemIds = [], presentationMode = false }: LiveMindMapProps) {
+  const [internalLayout, setInternalLayout] = useState<MapLayout>({ positions: {} });
+  const layout = controlledLayout ?? internalLayout;
+  const setLayout = onLayoutChange ?? setInternalLayout;
   const [selectedId, setSelectedId] = useState('');
   const [query, setQuery] = useState('');
   const [kindFilter, setKindFilter] = useState<AnalysisKind | 'all'>('all');
@@ -39,6 +46,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const lastFocusedNodeRef = useRef('');
+  const lastHandledFocusSequenceRef = useRef(0);
   const degradedViewportTrackingRef = useRef<DegradedViewportTracking>({ processedKey: '', trackedScroll: null });
   const explicitReframeRef = useRef(false);
   const focusFrameRef = useRef(0);
@@ -50,7 +58,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   useEffect(() => {
     const frame = requestAnimationFrame(() => setLayout((current) => analysisState.revision === 0 && analysisState.items.length === 0 ? resetMapLayout() : reconcileMapLayout(current, analysisState)));
     return () => cancelAnimationFrame(frame);
-  }, [analysisState]);
+  }, [analysisState, setLayout]);
   useEffect(() => () => { if (focusFrameRef.current) cancelAnimationFrame(focusFrameRef.current); }, []);
   const renderedLayout = useMemo(() => analysisState.revision === 0 && analysisState.items.length === 0 ? resetMapLayout() : reconcileMapLayout(layout, analysisState), [analysisState, layout]);
 
@@ -101,7 +109,9 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   };
 
   useEffect(() => {
-    if (!focusRequest) return;
+    if (!focusRequest || !active) return;
+    if (lastHandledFocusSequenceRef.current === focusRequest.sequence) return;
+    lastHandledFocusSequenceRef.current = focusRequest.sequence;
     const requested = focusRequest.itemId ? analysisState.items.find((item) => item.id === focusRequest.itemId) : undefined;
     const target = requested ?? [...analysisState.items].reverse().find((item) => focusRequest.evidenceUtteranceIds.some((id) => item.evidenceUtteranceIds.includes(id)));
     if (!target) return;
@@ -117,9 +127,15 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
     return () => { cancelAnimationFrame(firstFrame); if (secondFrame) cancelAnimationFrame(secondFrame); };
     // A sequence is a one-shot navigation command. Later analysis revisions must not steal focus.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusRequest?.sequence]);
+  }, [focusRequest?.sequence, active]);
 
   useEffect(() => {
+    const validExternalSelection = Boolean(selectedItemId && analysisState.items.some((item) => item.id === selectedItemId));
+    if (validExternalSelection) {
+      if (selectedId === selectedItemId) return;
+      const frame = requestAnimationFrame(() => setSelectedId(selectedItemId));
+      return () => cancelAnimationFrame(frame);
+    }
     const nextId = visibleSelectionId(selectedId, visibleItems.map((item) => item.id));
     if (nextId === selectedId) return;
     const shouldRestoreFocus = lastFocusedNodeRef.current !== '' && lastFocusedNodeRef.current === selectedId && document.activeElement === document.body;
@@ -135,7 +151,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
     return () => cancelAnimationFrame(frame);
     // focusNode intentionally uses the latest rendered layout and zoom for a user-visible selection replacement.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, visibleItems]);
+  }, [analysisState, selectedId, selectedItemId, visibleItems]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -197,8 +213,8 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   };
 
   return (
-    <section aria-label="ライブ・ディスカッションマップ" className="relative flex min-h-[620px] flex-col overflow-hidden rounded-2xl border border-[#d2d9d4] bg-[#e9eee9] shadow-[0_8px_30px_rgba(35,54,49,0.07)] xl:min-h-0">
-      <div className="z-20 flex flex-wrap items-start justify-between gap-2 border-b border-[#d2dad4] bg-[#f7f9f6]/95 p-3">
+    <section aria-label="ライブ・ディスカッションマップ" className={`relative flex flex-col overflow-hidden rounded-2xl border border-[#d2d9d4] bg-[#e9eee9] shadow-[0_8px_30px_rgba(35,54,49,0.07)] xl:min-h-0 ${presentationMode ? 'min-h-[540px]' : 'min-h-[620px]'}`}>
+      <div className={`z-20 flex flex-wrap items-start justify-between gap-2 border-b border-[#d2dad4] bg-[#f7f9f6]/95 ${presentationMode ? 'p-2' : 'p-3'}`}>
         <div><div className="flex items-center gap-2"><h1 className="text-base font-semibold">ライブ・ディスカッションマップ</h1><span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-[#4f6a61]">{visibleItems.length} / {filtered.length} NODES</span></div><p className="mt-0.5 text-xs text-[#53625e]">矢印キーで移動 · Eで編集 · CでAI提案を確認</p></div>
         <div className="flex flex-wrap gap-1 text-xs">
           <button disabled={!canUndo} onClick={onUndo} className="map-tool border bg-white disabled:opacity-40">元に戻す</button>
@@ -215,7 +231,6 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
       </div>
 
       {degraded && <p className="z-20 bg-[#fff4d9] px-3 py-2 text-xs font-semibold text-[#76551f]">大規模会議の縮退表示: 選択対象と最新nodeを合わせて最大{maximumRenderedNodes}件表示中。検索・filterで対象を絞ってください。</p>}
-      {operationStatus && <p role="status" aria-live="polite" className="z-20 border-b border-[#d2dad4] bg-white px-3 py-1.5 text-xs text-[#52615c]">{operationStatus}</p>}
       <div ref={viewportRef} role="region" tabIndex={0} className="mindmap-grid relative flex-1 overflow-auto" aria-label="マップviewport">
         <div className="relative origin-top-left transition-transform" style={{ width: 1_000, height: canvasHeight, transform: `scale(${zoom})` }}>
           <svg aria-hidden="true" className="absolute inset-0 h-full w-full overflow-visible">
@@ -227,7 +242,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
           </svg>
           {visibleItems.map((item) => {
             const position = renderedLayout.positions[item.id] ?? { x: 0, y: 0 };
-            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、状態 ${item.status}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => { if (editingItemId && editingItemId !== item.id) { setEditing(false); setEditingItemId(''); } setEditError(''); setSelectedId(item.id); onSelectionChange?.(item.id); }} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
+            return <button id={`map-node-${item.id}`} key={item.id} tabIndex={selectedId === item.id ? 0 : -1} aria-current={selectedId === item.id ? 'true' : undefined} aria-label={`${kindLabels[item.kind]} ${item.title}、状態 ${item.status}、${provenanceLabel[item.provenance]}、根拠 ${item.evidenceUtteranceIds.join('、')}`} onClick={() => { if (editingItemId && editingItemId !== item.id) { setEditing(false); setEditingItemId(''); } setEditError(''); setSelectedId(item.id); onSelectionChange?.(item.id); }} onFocus={() => { lastFocusedNodeRef.current = item.id; }} onKeyDown={(event) => handleNodeKey(event, item)} className={`absolute rounded-xl border-2 p-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-4 focus-visible:outline-[#153f38] ${kindStyles[item.kind]} ${selectedId === item.id ? 'ring-4 ring-[#2b9b6b]/25' : ''} ${highlightedItemIds.includes(item.id) ? 'workspace-change-once' : ''} ${['withdrawn', 'superseded'].includes(item.status) ? 'opacity-45' : ''}`} style={{ left: position.x, top: position.y, width: mapNodeWidth, minHeight: mapNodeHeight }}>
               <span className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase"><span>{kindLabels[item.kind]} · {item.status}</span><span className={item.provenance === 'ai-suggested' ? 'text-[#8a5a16]' : 'text-[#176044]'}>{provenanceLabel[item.provenance]}</span></span>
               <strong className="mt-1 block line-clamp-2 text-sm">{item.title}</strong>
               <span className="mt-1 block truncate text-[10px] text-[#52615c]">根拠 {item.evidenceUtteranceIds.join(' · ')}</span>

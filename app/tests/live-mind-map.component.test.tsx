@@ -55,6 +55,20 @@ describe('LiveMindMap DOM integration', () => {
     expect(screen.getByLabelText(/合成node 2/).getAttribute('aria-current')).toBe('true');
   });
 
+  test('a handled navigation request does not replay after an inactive view round trip', () => {
+    const state = stateWithNodes(3);
+    const request = { sequence: 1, itemId: 'component-node-0', evidenceUtteranceIds: ['component-u0'] };
+    const view = render(<LiveMindMap {...baseProps} analysisState={state} focusRequest={request} />);
+    flushFrames();
+    fireEvent.change(screen.getByLabelText('マップを検索'), { target: { value: '合成node' } });
+    fireEvent.click(screen.getByLabelText(/合成node 1/));
+    view.rerender(<LiveMindMap {...baseProps} analysisState={state} focusRequest={request} active={false} />);
+    view.rerender(<LiveMindMap {...baseProps} analysisState={state} focusRequest={request} active />);
+    flushFrames();
+    expect(screen.getByLabelText(/合成node 1/).getAttribute('aria-current')).toBe('true');
+    expect((screen.getByLabelText('マップを検索') as HTMLInputElement).value).toBe('合成node');
+  });
+
   test('node and live detail expose type, status, provenance, and evidence', () => {
     render(<LiveMindMap {...baseProps} analysisState={stateWithNodes(3)} />);
     flushFrames();
