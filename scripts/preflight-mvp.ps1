@@ -126,7 +126,7 @@ foreach ($entry in @(
   if ($actual -ne $manifest[$entry.Key]) { throw "Pinned OCR hash verification failed: $($entry.Key)" }
 }
 
-foreach ($port in @(3000, 43117)) { if (-not (Test-PortAvailable $port)) { throw "Loopback port $port is already in use." } }
+foreach ($port in @(3000, 43117, 43118)) { if (-not (Test-PortAvailable $port)) { throw "Loopback port $port is already in use." } }
 
 $fallback = @(
   Join-Path $repositoryRoot 'native\windows-audio\build\Release\techmap-audio.exe'

@@ -16,7 +16,11 @@ test('portable build pins official Node and assembles an explicit privacy-safe a
     assert.match(source, new RegExp(helper.replace('.', '\\.')));
   }
   assert.match(source, /data\/local/);
-  assert.match(source, /OpenAI-style credential pattern rejected/);
+  assert.match(source, /Credential pattern rejected from portable package/);
+  assert.match(source, /ZOOM_CLIENT_SECRET\|ZM_RTMS_SECRET\|ZOOM_WEBHOOK_SECRET/);
+  for (const packagedZoomFile of ['setup-zoom-rtms.ps1', 'zoom-credential-signer.mjs', 'zoom-rtms-bridge.mjs', 'zoom-webhook-host.mjs']) {
+    assert.match(source, new RegExp(packagedZoomFile.replaceAll('.', '\\.')));
+  }
   assert.doesNotMatch(source, /Copy-PortableDirectory \$repositoryRoot/);
 });
 
