@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { DiscussionWorkspace } from '../components/discussion-workspace.tsx';
 import type { AnalysisItem, AnalysisState } from '../domain/analysis/contract.ts';
 
@@ -22,6 +22,7 @@ function props(state = analysisState(1, items)) {
   };
 }
 
+beforeEach(() => { Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() }); });
 afterEach(cleanup);
 
 describe('DiscussionWorkspace', () => {
@@ -45,6 +46,8 @@ describe('DiscussionWorkspace', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Action・Risk' }));
     view.rerender(<DiscussionWorkspace {...callbacks} focusRequest={{ sequence: 1, itemId: 'decision', evidenceUtteranceIds: ['u-decision'] }} />);
     await waitFor(() => expect(screen.getByRole('tab', { name: '議論フォーカス' }).getAttribute('aria-selected')).toBe('true'));
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('map-node-decision')));
+    expect(document.getElementById('map-node-decision')?.getAttribute('aria-current')).toBe('true');
   });
 
   test('a topic request from the decision board falls back to focus and status remains visible', async () => {
@@ -54,6 +57,7 @@ describe('DiscussionWorkspace', () => {
     expect(screen.getByText('明示された状態通知')).toBeTruthy();
     view.rerender(<DiscussionWorkspace {...callbacks} focusRequest={{ sequence: 2, itemId: 'topic', evidenceUtteranceIds: ['u-topic'] }} />);
     await waitFor(() => expect(screen.getByRole('tab', { name: '議論フォーカス' }).getAttribute('aria-selected')).toBe('true'));
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('map-node-topic')));
   });
 
   test('shows one semantic change entry and does not replay it for the same revision', async () => {

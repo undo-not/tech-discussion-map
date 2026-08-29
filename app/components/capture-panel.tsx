@@ -47,9 +47,10 @@ export type CapturePanelProps = {
   onAnalysisStateChange: (state: AnalysisState, options?: { resetHistory?: boolean; resetLayout?: boolean }) => void;
   onTranscriptChange?: (state: TranscriptState) => void;
   presentationMode?: boolean;
+  onRequestSafetySettings?: () => void;
 };
 
-export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange, presentationMode = false }: CapturePanelProps) {
+export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateChange, onTranscriptChange, presentationMode = false, onRequestSafetySettings }: CapturePanelProps) {
   const localRuntime = useSyncExternalStore(subscribeRuntime, () => isLoopbackRuntime(window.location), () => false);
   const [sessionState, dispatch] = useReducer((state: TranscriptionSessionState, event: TranscriptionSessionEvent) => transitionTranscriptionSession(state, event), 'idle');
   const [devices, setDevices] = useState<MicrophoneDevice[]>([]);
@@ -780,7 +781,7 @@ export function CapturePanel({ analysisState, getAnalysisState, onAnalysisStateC
         <span className={`rounded-full px-3 py-1 font-bold ${openAiInFlight > 0 ? 'bg-[#fff0d8] text-[#7a541d]' : 'bg-white text-[#52615c]'}`}>OPENAI送信 {openAiInFlight > 0 ? 'ON' : 'OFF'}</span>
         <span className={`rounded-full px-3 py-1 font-bold ${saveLocally ? 'bg-[#e5efe9] text-[#176044]' : 'bg-white text-[#52615c]'}`}>LOCAL保存 {saveLocally ? 'ON' : 'OFF'}</span>
         <span className="text-[#52615c]">入力: {inputMode === 'microphone' ? 'microphone' : inputMode === 'teams-caption' ? `Teams caption OCR (${captionSourceState})` : inputMode === 'audio-fallback' ? `audio fallback (${teamsAudioState})` : inputMode === 'synthetic' ? 'synthetic demo' : 'none'} · 外部分析の許可設定: {externalAnalysisAllowed ? 'ON' : 'OFF'}</span>
-        {presentationMode && <label className={`flex items-center gap-1 rounded-full px-3 py-1 font-bold ${consentConfirmed ? 'bg-[#e5efe9] text-[#176044]' : 'bg-[#fff0d8] text-[#7a541d]'}`}><input type="checkbox" checked={consentConfirmed} onChange={(event) => revokeConsent(event.target.checked)} />全参加者同意 {consentConfirmed ? '確認済み' : '未確認'}</label>}
+        {presentationMode && <><span className={`rounded-full px-3 py-1 font-bold ${consentConfirmed ? 'bg-[#e5efe9] text-[#176044]' : 'bg-[#fff0d8] text-[#7a541d]'}`}>全参加者同意 {consentConfirmed ? '確認済み' : '未確認'}</span><button onClick={onRequestSafetySettings} className="rounded-lg border border-[#cbd3ce] bg-white px-2 py-1 font-semibold">安全設定を開く</button></>}
       </div>
       {presentationMode && meetingEnded && <p role="status" className="mx-auto mb-2 max-w-[1600px] rounded bg-[#fff4d9] p-2 text-xs font-semibold text-[#76551f]">会議入力を終了しました。暗号化保持、明示export、即時削除の判断は発表モードを終了して確認してください。</p>}
       <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[1fr_auto] lg:items-center">

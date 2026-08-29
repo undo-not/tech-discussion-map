@@ -96,7 +96,7 @@ export default function Home() {
         </div>
       </header>
 
-      <CapturePanel analysisState={analysisHistory.present} getAnalysisState={getAnalysisState} onAnalysisStateChange={receiveAnalysisState} onTranscriptChange={setLiveTranscript} presentationMode={presentationMode} />
+      <CapturePanel analysisState={analysisHistory.present} getAnalysisState={getAnalysisState} onAnalysisStateChange={receiveAnalysisState} onTranscriptChange={setLiveTranscript} presentationMode={presentationMode} onRequestSafetySettings={() => setPresentationMode(false)} />
 
       <DiscussionWorkspace key={workspaceSessionGeneration} analysisState={analysisHistory.present} transcript={liveTranscript} selectedItemId={selectedNode} focusRequest={focusRequest} canUndo={analysisHistory.past.length > 0} canRedo={analysisHistory.future.length > 0} onUndo={undoMap} onRedo={redoMap} onPatchItem={patchMapItem} onSelectionChange={announceWorkspaceSelection} onFocusItem={selectWorkspaceItem} operationStatus={mapOperationStatus} presentationMode={presentationMode} onPresentationModeChange={setPresentationMode} />
     </main>

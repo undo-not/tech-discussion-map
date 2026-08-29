@@ -8,7 +8,7 @@ Changing a view does not create or mutate an analysis item. Edits and confirmati
 
 ## Views
 
-The default **議論フォーカス** view retains the editable live mind map. **決定ボード** groups decision items into proposed/open, blocked, and confirmed/done columns. It may also navigate to question and topic items through explicit evidence links, but does not synthesize board records for them. **Action・Risk** groups action and risk items using the same columns. Withdrawn and superseded items are omitted from board and insight projections but remain available in the map's explicit history navigation.
+The default **議論フォーカス** view retains the editable live mind map. **決定ボード** groups decision items into proposed/open, blocked, and confirmed/done columns. Question and topic evidence targets fall back to the focus view because the decision board does not synthesize records for them. **Action・Risk** groups action and risk items using the same columns. Withdrawn and superseded items are omitted from board and insight projections and fall back to the map's explicit history navigation.
 
 The newest active open/proposed/blocked question or topic is shown as the current issue. Ordering is derived from validated item order and is stable for an unchanged revision. Switching among views preserves the selected item, transcript, analysis history, and retained map layout. Unsupported items reached through an explicit transcript, insight, or change-rail command switch to the focus view. Ordinary analysis updates never switch the view, move keyboard focus, pan the map, or replace the user's manual selection.
 
@@ -20,7 +20,7 @@ The UI does not continuously animate or automatically pan. `prefers-reduced-moti
 
 ## Presentation mode, evidence, and safety
 
-Presentation mode increases the central workspace share and reduces setup density. It does not unmount capture state. `CAPTURE`, `OPENAI送信`, `LOCAL保存`, input source, external-analysis permission, and participant-consent indicators remain visible, together with an operable compact consent checkbox and active pause/resume/stop controls. A meeting-ended retention reminder also remains visible. The full persistence, external-send, diagnostics, export/delete, and setup controls return when presentation mode is disabled.
+Presentation mode increases the central workspace share and reduces setup density. It does not unmount capture state. `CAPTURE`, `OPENAI送信`, `LOCAL保存`, input source, external-analysis permission, and participant-consent indicators remain visible, together with active pause/resume/stop controls. The compact consent state is read-only to avoid accidental session deletion; its safety-settings button explicitly exits presentation mode before consent can be changed. A meeting-ended retention reminder also remains visible. The full persistence, external-send, diagnostics, export/delete, and setup controls return when presentation mode is disabled.
 
 Transcript, insight, board, and update-rail controls use the existing one-shot evidence navigation contract. The destination is selected and, only after an explicit user command, keyboard focus may move to the active destination. Tabs, cards, map nodes, and presentation mode are keyboard-operable; state is expressed in text and accessible attributes; structural update text is announced through a polite live region.
 

@@ -20,7 +20,6 @@ type LiveMindMapProps = {
   onRedo: () => void;
   onPatchItem: (itemId: string, patch: HumanItemPatch) => boolean;
   onSelectionChange?: (itemId: string) => void;
-  operationStatus?: string;
   layout?: MapLayout;
   onLayoutChange?: Dispatch<SetStateAction<MapLayout>>;
   active?: boolean;
@@ -28,7 +27,7 @@ type LiveMindMapProps = {
   presentationMode?: boolean;
 };
 
-export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRedo, onUndo, onRedo, onPatchItem, onSelectionChange, operationStatus = '', layout: controlledLayout, onLayoutChange, active = true, highlightedItemIds = [], presentationMode = false }: LiveMindMapProps) {
+export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRedo, onUndo, onRedo, onPatchItem, onSelectionChange, layout: controlledLayout, onLayoutChange, active = true, highlightedItemIds = [], presentationMode = false }: LiveMindMapProps) {
   const [internalLayout, setInternalLayout] = useState<MapLayout>({ positions: {} });
   const layout = controlledLayout ?? internalLayout;
   const setLayout = onLayoutChange ?? setInternalLayout;
@@ -109,7 +108,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
   };
 
   useEffect(() => {
-    if (!focusRequest) return;
+    if (!focusRequest || !active) return;
     if (lastHandledFocusSequenceRef.current === focusRequest.sequence) return;
     lastHandledFocusSequenceRef.current = focusRequest.sequence;
     const requested = focusRequest.itemId ? analysisState.items.find((item) => item.id === focusRequest.itemId) : undefined;
@@ -122,7 +121,7 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
       if (['withdrawn', 'superseded'].includes(target.status)) setShowTombstones(true);
       setSelectedId(target.id);
       onSelectionChange?.(target.id);
-      if (active) secondFrame = requestAnimationFrame(() => focusNode(target.id, true));
+      secondFrame = requestAnimationFrame(() => focusNode(target.id, true));
     });
     return () => { cancelAnimationFrame(firstFrame); if (secondFrame) cancelAnimationFrame(secondFrame); };
     // A sequence is a one-shot navigation command. Later analysis revisions must not steal focus.
@@ -225,7 +224,6 @@ export function LiveMindMap({ analysisState, focusRequest = null, canUndo, canRe
       </div>
 
       {degraded && <p className="z-20 bg-[#fff4d9] px-3 py-2 text-xs font-semibold text-[#76551f]">大規模会議の縮退表示: 選択対象と最新nodeを合わせて最大{maximumRenderedNodes}件表示中。検索・filterで対象を絞ってください。</p>}
-      {operationStatus && <p role="status" aria-live="polite" className="z-20 border-b border-[#d2dad4] bg-white px-3 py-1.5 text-xs text-[#52615c]">{operationStatus}</p>}
       <div ref={viewportRef} role="region" tabIndex={0} className="mindmap-grid relative flex-1 overflow-auto" aria-label="マップviewport">
         <div className="relative origin-top-left transition-transform" style={{ width: 1_000, height: canvasHeight, transform: `scale(${zoom})` }}>
           <svg aria-hidden="true" className="absolute inset-0 h-full w-full overflow-visible">

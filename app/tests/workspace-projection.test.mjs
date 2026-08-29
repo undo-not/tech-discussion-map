@@ -46,7 +46,9 @@ test('view containment follows the view projection boundary', () => {
   assert.equal(viewContainsItem('focus', item('claim', 'claim', 'open')), true);
   assert.equal(viewContainsItem('decisions', item('decision', 'decision', 'open')), true);
   assert.equal(viewContainsItem('decisions', item('question', 'question', 'open')), false);
+  assert.equal(viewContainsItem('decisions', item('old-decision', 'decision', 'withdrawn')), false);
   assert.equal(viewContainsItem('decisions', item('action', 'action', 'open')), false);
   assert.equal(viewContainsItem('actions-risks', item('risk', 'risk', 'open')), true);
   assert.equal(viewContainsItem('actions-risks', item('question', 'question', 'open')), false);
+  assert.equal(viewContainsItem('actions-risks', item('old-action', 'action', 'superseded')), false);
 });
